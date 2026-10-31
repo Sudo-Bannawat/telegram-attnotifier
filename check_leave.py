@@ -91,6 +91,17 @@ def login() -> requests.Session:
 # Helper: parse the leave table – returns a list of dicts (one per row)
 # ---------------------------------------------------------------------------
 ISO_DATE = re.compile(r"^20\d{2}-\d{2}-\d{2}$")
+THAI_MONTHS = {
+    "ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4, "พ.ค.": 5, "มิ.ย.": 6,
+    "ก.ค.": 7, "ส.ค.": 8, "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12,
+    "มกราคม": 1, "กุมภาพันธ์": 2, "มีนาคม": 3, "เมษายน": 4, "พฤษภาคม": 5,
+    "มิถุนายน": 6, "กรกฎาคม": 7, "สิงหาคม": 8, "กันยายน": 9, "ตุลาคม": 10,
+    "พฤศจิกายน": 11, "ธันวาคม": 12,
+}
+THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")
+THAI_DATE = re.compile(
+    r"([0-9๐-๙]{1,2})\s+(" + "|".join(map(re.escape, THAI_MONTHS)) + r")\s+([0-9๐-๙]{4})"
+)
 
 
 def is_leave_row(cols: list[str]) -> bool:
@@ -103,7 +114,69 @@ def is_leave_row(cols: list[str]) -> bool:
     return sum(bool(ISO_DATE.fullmatch(cell.strip())) for cell in cols) >= 1
 
 
-def parse_leave_page(html: str):
+def thai_date_to_iso(value: str) -> str:
+    match = THAI_DATE.search(value)
+    if not match:
+        return ""
+    day, month, year = match.groups()
+    return date(int(year.translate(THAI_DIGITS)) - 543, THAI_MONTHS[month], int(day.translate(THAI_DIGITS))).isoformat()
+
+
+def leave_from_form(leave_id: str, topic: str, status: str, html: str):
+    """Parse current MyOffice popup form when the list is rendered as dashboard cards."""
+    text = " ".join(BeautifulSoup(html, "html.parser").stripped_strings)
+
+    def capture(pattern: str) -> str:
+        match = re.search(pattern, text)
+        return match.group(1).strip() if match else ""
+
+    start = capture(r"ตั้งแต่วันที่\s*(.*?)\s*ถึงวันที่")
+    end = capture(r"ถึงวันที่\s*(.*?)\s*มีกำหนด")
+    leave_type = capture(r"ขอลา\s*(.*?)\s*เนื่องจาก")
+    return {
+        "id": leave_id,
+        "activity_type": topic,
+        "leave_type": leave_type,
+        "topic": topic,
+        "phone": capture(r"โทรศัพท์\s*(.*?)\s*ขอแสดงความนับถือ"),
+        "start_date": thai_date_to_iso(start),
+        "end_date": thai_date_to_iso(end),
+        "record_date": thai_date_to_iso(capture(r"วันที่\s*(.*?)\s*เรื่อง")),
+        "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ตำแหน่ง"),
+        "reason": capture(r"เนื่องจาก\s*(.*?)\s*ตั้งแต่วันที่"),
+        "school": capture(r"สังกัด\s*(.*?)\s*ขอลา"),
+        "address": capture(r"ระหว่างลาติดต่อข้าพเจ้าได้ที่\s*(.*?)\s*โทรศัพท์"),
+        "status": status,
+        "position": capture(r"ตำแหน่ง\s*(?:ตำแหน่ง\s*)?(.*?)\s*สังกัด"),
+    }
+
+
+def parse_dashboard_leaves(html: str, session: requests.Session):
+    """Read the current tkk6 dashboard, whose rows link each leave to a popup form."""
+    soup = BeautifulSoup(html, "html.parser")
+    leaves = []
+    seen = set()
+    for tr in soup.find_all("tr"):
+        link = next((a.get("href", "") for a in tr.find_all("a") if "readtkk6_1&id=" in a.get("href", "")), "")
+        match = re.search(r"readtkk6_1&id=(\d+)", link)
+        if not match:
+            continue
+        cells = [cell.get_text(" ", strip=True) for cell in tr.find_all(["td", "th"])]
+        # Ignore outer layout rows; leave cards have six direct cells.
+        if not 5 <= len(cells) <= 7:
+            continue
+        if match.group(1) in seen:
+            continue
+        seen.add(match.group(1))
+        detail = session.get(LEAVE_FORM_URL.format(leave_id=match.group(1)), timeout=15)
+        detail.raise_for_status()
+        leaves.append(leave_from_form(match.group(1), cells[1], cells[-2] if len(cells) > 2 else "รอดำเนินการ", detail.text))
+    if not leaves:
+        raise ValueError("Leave dashboard contained no form links")
+    return leaves
+
+
+def parse_leave_page(html: str, session: requests.Session):
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
     if not tables:
@@ -119,9 +192,7 @@ def parse_leave_page(html: str):
         if rows:
             candidates.append(rows)
     if not candidates:
-        raise ValueError(
-            "No dated leave records found; check MyOffice account permission or page layout"
-        )
+        return parse_dashboard_leaves(html, session)
     return max(candidates, key=len)
 
 # ---------------------------------------------------------------------------
@@ -163,6 +234,8 @@ def leave_form_button(leave_id: str, leave_type: str):
 
 def leave_from_row(row: list[str]):
     """Map `web_tkk6` columns used by the current MyOffice leave list."""
+    if isinstance(row, dict):
+        return row
     return {
         "id": row[0],
         "activity_type": row[1] if len(row) > 1 else "",
@@ -315,7 +388,7 @@ def main():
     session = login()
     resp = session.get(LEAVE_URL, timeout=15)
     resp.raise_for_status()
-    leaves = [leave_from_row(row) for row in parse_leave_page(resp.text)]
+    leaves = [leave_from_row(row) for row in parse_leave_page(resp.text, session)]
 
     if RESET_NOTIFICATION_STATE:
         # Manual reset: state must contain only future leave dates, regardless
