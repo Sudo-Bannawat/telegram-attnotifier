@@ -92,16 +92,27 @@ def login() -> requests.Session:
 # ---------------------------------------------------------------------------
 ISO_DATE = re.compile(r"^20\d{2}-\d{2}-\d{2}$")
 THAI_MONTHS = {
-    "ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4, "พ.ค.": 5, "มิ.ย.": 6,
-    "ก.ค.": 7, "ส.ค.": 8, "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12,
-    "มกราคม": 1, "กุมภาพันธ์": 2, "มีนาคม": 3, "เมษายน": 4, "พฤษภาคม": 5,
-    "มิถุนายน": 6, "กรกฎาคม": 7, "สิงหาคม": 8, "กันยายน": 9, "ตุลาคม": 10,
-    "พฤศจิกายน": 11, "ธันวาคม": 12,
+    "ม.ค.": 1, "ม.ค": 1, "มกราคม": 1, "มค": 1,
+    "ก.พ.": 2, "ก.พ": 2, "กุมภาพันธ์": 2, "กพ": 2,
+    "มี.ค.": 3, "มี.ค": 3, "มีนาคม": 3, "มีค": 3,
+    "เม.ย.": 4, "เม.ย": 4, "เมษายน": 4, "เมย": 4,
+    "พ.ค.": 5, "พ.ค": 5, "พฤษภาคม": 5, "พค": 5,
+    "มิ.ย.": 6, "มิ.ย": 6, "มิถุนายน": 6, "มิย": 6,
+    "ก.ค.": 7, "ก.ค": 7, "กรกฎาคม": 7, "กค": 7,
+    "ส.ค.": 8, "ส.ค": 8, "สิงหาคม": 8, "สค": 8,
+    "ก.ย.": 9, "ก.ย": 9, "กันยายน": 9, "กย": 9,
+    "ต.ค.": 10, "ต.ค": 10, "ตุลาคม": 10, "ตค": 10,
+    "พ.ย.": 11, "พ.ย": 11, "พฤศจิกายน": 11, "พย": 11,
+    "ธ.ค.": 12, "ธ.ค": 12, "ธันวาคม": 12, "ธค": 12,
 }
 THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")
 THAI_DATE = re.compile(
-    r"([0-9๐-๙]{1,2})\s+(" + "|".join(map(re.escape, THAI_MONTHS)) + r")\s+([0-9๐-๙]{4})"
+    r"([0-9๐-๙]{1,2})\s*(?:\b)?([ก-ฮA-Za-z\s\.]+?)\s*(?:พ\.?\s*ศ\.?\s*)?([0-9๐-๙]{4})"
 )
+
+
+def normalize_thai_month(value: str) -> str:
+    return re.sub(r"[\s\.]+", "", value or "")
 
 
 def is_leave_row(cols: list[str]) -> bool:
@@ -115,11 +126,33 @@ def is_leave_row(cols: list[str]) -> bool:
 
 
 def thai_date_to_iso(value: str) -> str:
+    if not value:
+        return ""
+    if ISO_DATE.fullmatch(value.strip()):
+        return value.strip()
+
     match = THAI_DATE.search(value)
     if not match:
         return ""
+
     day, month, year = match.groups()
-    return date(int(year.translate(THAI_DIGITS)) - 543, THAI_MONTHS[month], int(day.translate(THAI_DIGITS))).isoformat()
+    month_key = normalize_thai_month(month)
+    month_num = None
+
+    for key, month_value in THAI_MONTHS.items():
+        if normalize_thai_month(key) == month_key:
+            month_num = month_value
+            break
+
+    if month_num is None:
+        return ""
+
+    try:
+        d = int(day.translate(THAI_DIGITS))
+        y = int(year.translate(THAI_DIGITS)) - 543
+        return date(y, month_num, d).isoformat()
+    except ValueError:
+        return ""
 
 
 def leave_from_form(leave_id: str, topic: str, status: str, html: str):
@@ -130,18 +163,26 @@ def leave_from_form(leave_id: str, topic: str, status: str, html: str):
         match = re.search(pattern, text)
         return match.group(1).strip() if match else ""
 
-    start = capture(r"ตั้งแต่วันที่\s*(.*?)\s*ถึงวันที่")
-    end = capture(r"ถึงวันที่\s*(.*?)\s*มีกำหนด")
-    leave_type = capture(r"ขอลา\s*(.*?)\s*เนื่องจาก")
+    start = capture(r"ตั้งแต่วันที่\s*(.*?)\s*ถึงวันที่") or capture(r"ตั้งแต่\s*(.*?)\s*ถึงวันที่")
+    end = capture(r"ถึงวันที่\s*(.*?)\s*มีกำหนด") or capture(r"ถึง\s*(.*?)\s*มีกำหนด")
+    record = capture(r"วันที่\s*(.*?)\s*เรื่อง") or capture(r"วันที่\s*(.*?)\s*เรื่องการลา")
+    if not start and record:
+        start = record
+
+    start_iso = thai_date_to_iso(start)
+    record_iso = thai_date_to_iso(record)
+    if not start_iso and record_iso:
+        start_iso = record_iso
+
     return {
         "id": leave_id,
         "activity_type": topic,
-        "leave_type": leave_type,
+        "leave_type": capture(r"ขอลา\s*(.*?)\s*เนื่องจาก"),
         "topic": topic,
         "phone": capture(r"โทรศัพท์\s*(.*?)\s*ขอแสดงความนับถือ"),
-        "start_date": thai_date_to_iso(start),
-        "end_date": thai_date_to_iso(end),
-        "record_date": thai_date_to_iso(capture(r"วันที่\s*(.*?)\s*เรื่อง")),
+        "start_date": start_iso,
+        "end_date": thai_date_to_iso(end) or start_iso,
+        "record_date": record_iso,
         "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ตำแหน่ง"),
         "reason": capture(r"เนื่องจาก\s*(.*?)\s*ตั้งแต่วันที่"),
         "school": capture(r"สังกัด\s*(.*?)\s*ขอลา"),
@@ -205,6 +246,7 @@ if STATE_FILE.exists():
         state = json.loads(content) if content else {}
 else:
     state = {}
+
 
 def save_state():
     with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -272,10 +314,14 @@ def leave_message(leave: dict, heading: str):
 
 
 def is_after_today(leave: dict) -> bool:
+    start_date = leave.get("start_date")
+    if not start_date:
+        print(f"⚠️ Skip leave #{leave.get('id', '?')}: missing start date")
+        return False
     try:
-        leave_date = date.fromisoformat(leave["start_date"])
+        leave_date = date.fromisoformat(start_date)
     except ValueError:
-        print(f"Skip leave #{leave['id']}: invalid start date {leave['start_date']!r}")
+        print(f"Skip leave #{leave.get('id', '?')}: invalid start date {start_date!r}")
         return False
     bangkok = timezone(timedelta(hours=7))
     return leave_date > datetime.now(bangkok).date()
@@ -439,6 +485,7 @@ def main():
         # Update stored status regardless of whether we sent a reply.
         state[ID] = {**entry, "status": status}
         save_state()
+
 
 if __name__ == "__main__":
     try:
