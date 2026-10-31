@@ -313,18 +313,29 @@ def leave_message(leave: dict, heading: str):
     )
 
 
-def is_after_today(leave: dict) -> bool:
+def should_reset_notify(leave: dict) -> bool:
     start_date = leave.get("start_date")
     if not start_date:
-        print(f"⚠️ Skip leave #{leave.get('id', '?')}: missing start date")
         return False
     try:
         leave_date = date.fromisoformat(start_date)
     except ValueError:
-        print(f"Skip leave #{leave.get('id', '?')}: invalid start date {start_date!r}")
         return False
+
     bangkok = timezone(timedelta(hours=7))
-    return leave_date > datetime.now(bangkok).date()
+    today = datetime.now(bangkok).date()
+
+    if leave_date >= today:
+        return True
+
+    is_same_month = (leave_date.year == today.year and leave_date.month == today.month)
+    is_pending = status_kind(leave.get("status", "")) == "pending"
+    return is_same_month and is_pending
+
+
+def is_after_today(leave: dict) -> bool:
+    """Backward-compatible wrapper for older reset logic."""
+    return should_reset_notify(leave)
 
 
 def bangkok_today() -> date:
@@ -437,17 +448,18 @@ def main():
     leaves = [leave_from_row(row) for row in parse_leave_page(resp.text, session)]
 
     if RESET_NOTIFICATION_STATE:
-        # Manual reset: state must contain only future leave dates, regardless
-        # of approval result, so later decisions stay threaded to these messages.
+        # Reset: include current-day and future leave records, plus same-month pending leaves
+        # from the past so the reset notification set remains complete without re-adding
+        # older approvals/rejections that should not be re-notified.
         future_leaves = sorted(
-            (leave for leave in leaves if is_after_today(leave)),
+            (leave for leave in leaves if should_reset_notify(leave)),
             key=lambda leave: (leave["start_date"], int(leave["id"])),
         )
         state = {}
         save_state()
-        print(f"Reset: sending {len(future_leaves)} leave notification(s) after today")
+        print(f"Reset: sending {len(future_leaves)} leave notification(s) matching criteria")
         for leave in future_leaves:
-            save_notified_leave(leave, "📚 บันทึกใบลาหลังวันนี้")
+            save_notified_leave(leave, "📚 บันทึกใบลา (ระบบรีเซ็ต)")
         return
 
     if DAILY_LEAVE_REPORT:
