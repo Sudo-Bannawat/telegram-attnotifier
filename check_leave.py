@@ -93,8 +93,9 @@ def parse_leave_page(html: str):
 # ---------------------------------------------------------------------------
 STATE_FILE = Path(__file__).with_name("leave_state.json")
 if STATE_FILE.exists():
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        state = json.load(f)
+    with open(STATE_FILE, "r", encoding="utf-8-sig") as f:  # utf-8-sig strips BOM if present
+        content = f.read().strip()
+        state = json.loads(content) if content else {}
 else:
     state = {}
 
