@@ -33,6 +33,9 @@ LEAVE_CATEGORY = os.getenv("MYOFFICE_LEAVE_CATEGORY", "187")
 LEAVE_URL = (
     f"{BASE_URL}/index.php?name=tkk6&op=tkk6_read&category={LEAVE_CATEGORY}"
 )
+CANCELLATION_URL = (
+    f"{BASE_URL}/index.php?name=tkknola&op=tkknola_read&category={LEAVE_CATEGORY}"
+)
 LEAVE_FORM_URL = f"{BASE_URL}/popup2.php?name=tkk6&file=readtkk6_1&id={{leave_id}}"
 
 USER = os.getenv("MYOFFICE_USER")
@@ -40,6 +43,7 @@ PASS = os.getenv("MYOFFICE_PASS")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RESET_NOTIFICATION_STATE = os.getenv("RESET_NOTIFICATION_STATE") == "true"
+DAILY_LEAVE_REPORT = os.getenv("DAILY_LEAVE_REPORT") == "true"
 
 if not all([USER, PASS, BOT_TOKEN, CHAT_ID]):
     print("⚠️ Missing one or more required environment variables.")
@@ -163,6 +167,7 @@ def leave_from_row(row: list[str]):
         "id": row[0],
         "activity_type": row[1] if len(row) > 1 else "",
         "leave_type": row[1] if len(row) > 1 else "",
+        "topic": row[8] if len(row) > 8 else "",
         "phone": row[5] if len(row) > 5 else "",
         "start_date": row[6] if len(row) > 6 else "",
         "end_date": row[7] if len(row) > 7 else "",
@@ -171,7 +176,8 @@ def leave_from_row(row: list[str]):
         "reason": row[12] if len(row) > 12 else "",
         "school": row[4] if len(row) > 4 else "",
         "address": row[17] if len(row) > 17 else "",
-        "status": row[21] if len(row) > 21 else "รอดำเนินการ",
+        "status": row[20] if len(row) > 20 else "รอดำเนินการ",
+        "position": row[24] if len(row) > 24 else "",
     }
 
 
@@ -182,7 +188,7 @@ def leave_message(leave: dict, heading: str):
         f"👤 <b>ผู้ยื่น:</b> {escape(leave['requester_name'])}\n"
         f"🏷️ <b>ประเภท:</b> {escape(leave['leave_type'])}\n"
         f"📅 <b>วันลา:</b> {escape(leave['start_date'])} — {escape(leave['end_date'])}\n"
-        f"💬 <b>เรื่อง:</b> {escape(leave['activity_type'])}\n"
+        f"💬 <b>เรื่อง:</b> {escape(leave['topic'])}\n"
         f"📝 <b>เหตุผล:</b> {escape(leave['reason'])}\n"
         f"🏫 <b>หน่วยงาน:</b> {escape(leave['school'])}\n"
         f"📞 <b>โทร:</b> {escape(leave['phone'])}\n"
@@ -200,6 +206,94 @@ def is_after_today(leave: dict) -> bool:
         return False
     bangkok = timezone(timedelta(hours=7))
     return leave_date > datetime.now(bangkok).date()
+
+
+def bangkok_today() -> date:
+    return datetime.now(timezone(timedelta(hours=7))).date()
+
+
+def status_kind(status: str) -> str:
+    value = status.strip().lower()
+    if any(word in value for word in ("ยกเลิก", "cancel")):
+        return "cancelled"
+    if value in {"อนุญาต", "อนุญาติ", "อนุมัติ", "approved", "accept"}:
+        return "approved"
+    if value in {"ไม่อนุญาต", "ไม่อนุญาติ", "ปฏิเสธ", "reject", "rejected"}:
+        return "rejected"
+    return "pending"
+
+
+def thai_date(value: date) -> str:
+    return f"{value.day:02d}/{value.month:02d}/{value.year + 543}"
+
+
+def daily_report_markup(leaves: list[dict], offset: int) -> dict:
+    buttons = []
+    for index, leave in enumerate(leaves, start=offset + 1):
+        buttons.append([{
+            "text": f"ดูแบบเต็ม · {index}",
+            "url": LEAVE_FORM_URL.format(leave_id=leave["id"]),
+        }])
+    return {"inline_keyboard": buttons}
+
+
+def send_daily_report(leaves: list[dict], heading: str, report_date: date):
+    """Send ordered report chunks; Telegram supports buttons below, not inline text."""
+    for offset in range(0, len(leaves), 20):
+        chunk = leaves[offset:offset + 20]
+        lines = []
+        for index, leave in enumerate(chunk, start=offset + 1):
+            lines.append(
+                f"<b>{index}.</b> {escape(leave['requester_name'])} - "
+                f"{escape(leave['position'])}\n"
+                f"{escape(leave['topic'])}\n"
+                f"<i>เหตุผลการลา:</i> {escape(leave['reason'])}"
+            )
+        title = heading if offset == 0 else f"{heading} (ต่อ)"
+        text = f"<b>{title}</b>\n📅 {thai_date(report_date)}\n\n" + "\n\n".join(lines)
+        send_telegram(text, reply_markup=daily_report_markup(chunk, offset))
+
+
+def cancelled_leave_ids(session: requests.Session) -> set[str]:
+    """Get original leave IDs from the cancellation register (`tkknola.edit`)."""
+    response = session.get(CANCELLATION_URL, timeout=15)
+    response.raise_for_status()
+    cancellation_rows = parse_leave_page(response.text)
+    return {
+        row[5].strip()
+        for row in cancellation_rows
+        if len(row) > 5 and row[5].strip().isdigit()
+    }
+
+
+def run_daily_leave_report(leaves: list[dict], cancelled_ids: set[str]):
+    today = bangkok_today()
+    report_key = today.isoformat()
+    reports = state.setdefault("_daily_reports", {})
+    if report_key in reports:
+        print(f"Daily report already sent for {report_key}")
+        return
+
+    today_leaves = [
+        leave for leave in leaves
+        if leave["start_date"] == report_key and leave["id"] not in cancelled_ids
+    ]
+    approved = [leave for leave in today_leaves if status_kind(leave["status"]) == "approved"]
+    rejected = [leave for leave in today_leaves if status_kind(leave["status"]) == "rejected"]
+    approved.sort(key=lambda leave: (leave["requester_name"], int(leave["id"])))
+    rejected.sort(key=lambda leave: (leave["requester_name"], int(leave["id"])))
+
+    if approved:
+        send_daily_report(approved, "วันนี้มีบุคลากรแจ้งลา", today)
+    if rejected:
+        send_daily_report(rejected, "ผู้กรอกแบบฟอร์มขอลาไม่ได้รับอนุญาต", today)
+
+    reports[report_key] = {
+        "approved": len(approved),
+        "rejected": len(rejected),
+    }
+    save_state()
+    print(f"Daily report: approved={len(approved)}, rejected={len(rejected)}")
 
 
 def save_notified_leave(leave: dict, heading: str):
@@ -237,6 +331,11 @@ def main():
             save_notified_leave(leave, "📚 บันทึกใบลาหลังวันนี้")
         return
 
+    if DAILY_LEAVE_REPORT:
+        # Fail closed: no report is safer than reporting leave already cancelled.
+        run_daily_leave_report(leaves, cancelled_leave_ids(session))
+        return
+
     # Normal scheduled check handles newest leave only.
     leave = leaves[0]
     ID = leave["id"]
@@ -257,9 +356,9 @@ def main():
     if status != prev_status:
         # Only react to approval/rejection.
         decision = None
-        if status.lower() in ["อนุญาติ", "approved", "accept"]:
-            decision = "✅ อนุญาติ"
-        elif status.lower() in ["ปฏิเสธ", "reject", "rejected"]:
+        if status_kind(status) == "approved":
+            decision = "✅ อนุญาต"
+        elif status_kind(status) == "rejected":
             decision = "❌ ปฏิเสธ"
         if decision:
             reply = f"<b>{decision}</b>\n<blockquote>ใบลาเลขที่ #{escape(ID)}</blockquote>"
