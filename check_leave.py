@@ -16,6 +16,7 @@ Python image). No extra configuration is required beyond the four secrets:
 
 import os
 import json
+import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from html import escape
@@ -85,6 +86,19 @@ def login() -> requests.Session:
 # ---------------------------------------------------------------------------
 # Helper: parse the leave table – returns a list of dicts (one per row)
 # ---------------------------------------------------------------------------
+ISO_DATE = re.compile(r"^20\d{2}-\d{2}-\d{2}$")
+
+
+def is_leave_row(cols: list[str]) -> bool:
+    """Reject dashboard/statistics rows such as fiscal year 2570."""
+    if not cols or not cols[0].strip().isdigit():
+        return False
+    first_value = int(cols[0].strip())
+    if 2400 <= first_value <= 2700:  # Thai Buddhist fiscal/calendar year
+        return False
+    return sum(bool(ISO_DATE.fullmatch(cell.strip())) for cell in cols) >= 1
+
+
 def parse_leave_page(html: str):
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
@@ -96,13 +110,14 @@ def parse_leave_page(html: str):
         rows = []
         for tr in table.find_all("tr"):
             cols = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
-            # Ignore layout/navigation tables. A leave record starts with DB ID.
-            if cols and cols[0].strip().isdigit():
+            if is_leave_row(cols):
                 rows.append(cols)
         if rows:
             candidates.append(rows)
     if not candidates:
-        raise ValueError("No leave records found; check MyOffice account permission")
+        raise ValueError(
+            "No dated leave records found; check MyOffice account permission or page layout"
+        )
     return max(candidates, key=len)
 
 # ---------------------------------------------------------------------------
@@ -211,12 +226,12 @@ def main():
     if RESET_NOTIFICATION_STATE:
         # Manual reset: state must contain only future leave dates, regardless
         # of approval result, so later decisions stay threaded to these messages.
-        state = {}
-        save_state()
         future_leaves = sorted(
             (leave for leave in leaves if is_after_today(leave)),
             key=lambda leave: (leave["start_date"], int(leave["id"])),
         )
+        state = {}
+        save_state()
         print(f"Reset: sending {len(future_leaves)} leave notification(s) after today")
         for leave in future_leaves:
             save_notified_leave(leave, "📚 บันทึกใบลาหลังวันนี้")
