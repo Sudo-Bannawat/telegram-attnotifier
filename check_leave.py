@@ -389,7 +389,7 @@ def cancelled_leave_ids(session: requests.Session) -> set[str]:
     """Get original leave IDs from the cancellation register (`tkknola.edit`)."""
     response = session.get(CANCELLATION_URL, timeout=15)
     response.raise_for_status()
-    cancellation_rows = parse_leave_page(response.text)
+    cancellation_rows = parse_leave_page(response.text, session)
     return {
         row[5].strip()
         for row in cancellation_rows
