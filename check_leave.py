@@ -18,6 +18,7 @@ import os
 import json
 import re
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -426,6 +427,19 @@ def run_daily_leave_report(leaves: list[dict], cancelled_ids: set[str]):
     print(f"Daily report: approved={len(approved)}, rejected={len(rejected)}")
 
 
+def leave_num(leave: dict) -> int:
+    try:
+        return int(leave["id"])
+    except (TypeError, ValueError):
+        return 0
+
+
+def known_watermark() -> int:
+    """Highest leave ID already announced; older unseen IDs are never re-announced."""
+    ids = [int(k) for k in state if k.isdigit()]
+    return max([int(state.get("_watermark", 0)), *ids])
+
+
 def save_notified_leave(leave: dict, heading: str):
     result = send_telegram(
         leave_message(leave, heading),
@@ -455,7 +469,7 @@ def main():
             (leave for leave in leaves if should_reset_notify(leave)),
             key=lambda leave: (leave["start_date"], int(leave["id"])),
         )
-        state = {}
+        state = {"_watermark": max((leave_num(l) for l in leaves), default=0)}
         save_state()
         print(f"Reset: sending {len(future_leaves)} leave notification(s) matching criteria")
         for leave in future_leaves:
@@ -467,24 +481,31 @@ def main():
         run_daily_leave_report(leaves, cancelled_leave_ids(session))
         return
 
-    # Normal scheduled check handles newest leave only.
-    leave = leaves[0]
-    ID = leave["id"]
-    status = leave["status"]
+    # Normal scheduled check: handle every leave, oldest first.
+    leaves.sort(key=leave_num)
 
-    # -------------------------------------------------------------------
-    # 1️⃣ New request handling
-    # -------------------------------------------------------------------
-    entry = state_entry(ID)
-    if ID not in state:
+    # 1) New requests: any unseen ID above the watermark. Stop on the first
+    # failure so unsent leaves stay above the watermark and retry next run.
+    watermark = known_watermark()
+    if watermark:
+        new_leaves = [l for l in leaves if l["id"] not in state and leave_num(l) > watermark]
+    else:
+        new_leaves = leaves[-1:]  # empty state: announce only the newest
+    for leave in new_leaves:
         save_notified_leave(leave, "📝 มีใบลาใหม่")
-        return
+        state["_watermark"] = max(int(state.get("_watermark", 0)), leave_num(leave))
+        save_state()
+        time.sleep(1.5)  # stay under Telegram's per-chat rate limit
 
-    # -------------------------------------------------------------------
-    # 2️⃣ Status change handling
-    # -------------------------------------------------------------------
-    prev_status = entry.get("status", "")
-    if status != prev_status:
+    # 2) Status changes on every tracked leave.
+    for leave in leaves:
+        ID = leave["id"]
+        if ID not in state:
+            continue
+        entry = state_entry(ID)
+        status = leave["status"]
+        if status == entry.get("status", ""):
+            continue
         # Only react to approval/rejection.
         decision = None
         if status_kind(status) == "approved":
@@ -494,6 +515,7 @@ def main():
         if decision:
             reply = f"<b>{decision}</b>\n<blockquote>ใบลาเลขที่ #{escape(ID)}</blockquote>"
             send_telegram(reply, entry.get("telegram_message_id"))
+            time.sleep(1.5)
         # Update stored status regardless of whether we sent a reply.
         state[ID] = {**entry, "status": status}
         save_state()
