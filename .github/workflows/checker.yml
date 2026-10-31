@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: checkleave
+  cancel-in-progress: false
+
+
 jobs:
   run-check:
     runs-on: ubuntu-latest
