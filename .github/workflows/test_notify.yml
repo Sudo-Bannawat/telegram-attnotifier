@@ -1,7 +1,7 @@
 name: TestNotify
 
 on:
-  workflow_dispatch: {}   # รันมือครั้งเดียว กด Run workflow ใน GitHub Actions
+  workflow_dispatch: {}
 
 jobs:
   send-test:
@@ -13,44 +13,43 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python3 - <<'EOF'
-import os, requests
+          import os, requests
 
-token   = os.environ["TELEGRAM_BOT_TOKEN"]
-chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          token   = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
 
-# ── ข้อความที่ 1: แจ้งเตือนใบลาใหม่ (เหมือนของจริง) ──────────────────────
-new_leave = (
-    "📝 <b>ใบลาใหม่</b>\n"
-    "\n"
-    "<b>ID:</b> 1149\n"
-    "<b>กิจกรรม:</b> กิจส่วนตัว\n"
-    "<b>ชื่อผู้ขอ:</b> นางสาวณัชชา  ชุมชาติ\n"
-    "<b>ประเภทลา:</b> เดินทางไปเข้ารับการสอบแข่งขันเพื่อบรรจุและแต่งตั้งบุคคลเข้ารับราชการ ตำแหน่งครูผู้ช่วย\n"
-    "<b>ตั้งแต่:</b> 2026-11-13  <b>ถึง:</b> 2026-11-16\n"
-    "<b>เหตุผล:</b> ขอลากิจส่วนตัว\n"
-    "<b>วันที่บันทึก:</b> 2026-10-29\n"
-    "<b>โทร:</b> 0656090810\n"
-    "<b>โรงเรียน/หน่วยงาน:</b> โรงเรียนอุบลรัตนราชกัญญาราชวิทยาลัย พัทลุง\n"
-    "<b>ที่อยู่:</b> K2F แมนชั่น ตำบล คูหาสวรรค์ อำเภอเมืองพัทลุง พัทลุง 93000\n"
-    "<b>สถานะ:</b> รอดำเนินการ\n"
-    "<b>ไฟล์แนบ:</b> 25691029_191722_9808.pdf\n"
-)
+          new_leave = (
+              "📝 <b>ใบลาใหม่</b>\n"
+              "\n"
+              "<b>ID:</b> 1149\n"
+              "<b>กิจกรรม:</b> กิจส่วนตัว\n"
+              "<b>ชื่อผู้ขอ:</b> นางสาวณัชชา  ชุมชาติ\n"
+              "<b>ประเภทลา:</b> เดินทางไปเข้ารับการสอบแข่งขันเพื่อบรรจุและแต่งตั้งบุคคล\n"
+              "<b>ตั้งแต่:</b> 2026-11-13  <b>ถึง:</b> 2026-11-16\n"
+              "<b>เหตุผล:</b> ขอลากิจส่วนตัว\n"
+              "<b>วันที่บันทึก:</b> 2026-10-29\n"
+              "<b>โทร:</b> 0656090810\n"
+              "<b>โรงเรียน/หน่วยงาน:</b> โรงเรียนอุบลรัตนราชกัญญาราชวิทยาลัย พัทลุง\n"
+              "<b>ที่อยู่:</b> K2F แมนชั่น ตำบล คูหาสวรรค์ อำเภอเมืองพัทลุง พัทลุง 93000\n"
+              "<b>สถานะ:</b> รอดำเนินการ\n"
+              "<b>ไฟล์แนบ:</b> 25691029_191722_9808.pdf\n"
+          )
 
-# ── ข้อความที่ 2: อนุญาติ (reply จำลอง) ───────────────────────────────────
-approved = "✅ <b>อนุญาติ</b>  (ใบลา ID 1149)"
+          approved = "✅ <b>อนุญาติ</b>  (ใบลา ID 1149)"
+          rejected = "❌ <b>ปฏิเสธ</b>  (ใบลา ID 1149)"
 
-# ── ข้อความที่ 3: ปฏิเสธ (reply จำลอง) ────────────────────────────────────
-rejected = "❌ <b>ปฏิเสธ</b>  (ใบลา ID 1149)"
+          url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-url = f"https://api.telegram.org/bot{token}/sendMessage"
-
-for text in [new_leave, approved, rejected]:
-    r = requests.post(url, data={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }, timeout=10)
-    print(r.status_code, r.json().get("ok"))
-
-EOF
+          for text in [new_leave, approved, rejected]:
+              r = requests.post(
+                  url,
+                  data={
+                      "chat_id": chat_id,
+                      "text": text,
+                      "parse_mode": "HTML",
+                      "disable_web_page_preview": True,
+                  },
+                  timeout=10,
+              )
+              print(r.status_code, r.json().get("ok"))
+          EOF
