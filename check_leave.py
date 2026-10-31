@@ -107,7 +107,9 @@ THAI_MONTHS = {
 }
 THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")
 THAI_DATE = re.compile(
-    r"([0-9๐-๙]{1,2})\s*(?:\b)?([ก-ฮA-Za-z\s\.]+?)\s*(?:พ\.?\s*ศ\.?\s*)?([0-9๐-๙]{4})"
+    r"([0-9]{1,2})\s*(?:พ\.?\s*ศ\.?\s*)?(" +
+    "|".join(map(re.escape, sorted(THAI_MONTHS, key=len, reverse=True))) +
+    r")\s*(?:พ\.?\s*ศ\.?\s*)?([0-9]{4})"
 )
 
 
@@ -128,29 +130,26 @@ def is_leave_row(cols: list[str]) -> bool:
 def thai_date_to_iso(value: str) -> str:
     if not value:
         return ""
-    if ISO_DATE.fullmatch(value.strip()):
-        return value.strip()
 
-    match = THAI_DATE.search(value)
+    clean_val = value.translate(THAI_DIGITS)
+    match = THAI_DATE.search(clean_val)
     if not match:
         return ""
 
-    day, month, year = match.groups()
-    month_key = normalize_thai_month(month)
-    month_num = None
-
-    for key, month_value in THAI_MONTHS.items():
-        if normalize_thai_month(key) == month_key:
-            month_num = month_value
-            break
+    day, month_str, year = match.groups()
+    month_num = THAI_MONTHS.get(month_str)
+    if month_num is None:
+        clean_month = normalize_thai_month(month_str)
+        for key, month_value in THAI_MONTHS.items():
+            if normalize_thai_month(key) == clean_month:
+                month_num = month_value
+                break
 
     if month_num is None:
         return ""
 
     try:
-        d = int(day.translate(THAI_DIGITS))
-        y = int(year.translate(THAI_DIGITS)) - 543
-        return date(y, month_num, d).isoformat()
+        return date(int(year) - 543, month_num, int(day)).isoformat()
     except ValueError:
         return ""
 
@@ -166,13 +165,14 @@ def leave_from_form(leave_id: str, topic: str, status: str, html: str):
     start = capture(r"ตั้งแต่วันที่\s*(.*?)\s*ถึงวันที่") or capture(r"ตั้งแต่\s*(.*?)\s*ถึงวันที่")
     end = capture(r"ถึงวันที่\s*(.*?)\s*มีกำหนด") or capture(r"ถึง\s*(.*?)\s*มีกำหนด")
     record = capture(r"วันที่\s*(.*?)\s*เรื่อง") or capture(r"วันที่\s*(.*?)\s*เรื่องการลา")
-    if not start and record:
-        start = record
-
     start_iso = thai_date_to_iso(start)
+    end_iso = thai_date_to_iso(end)
     record_iso = thai_date_to_iso(record)
+
     if not start_iso and record_iso:
         start_iso = record_iso
+    if not end_iso and record_iso:
+        end_iso = record_iso
 
     return {
         "id": leave_id,
@@ -181,7 +181,7 @@ def leave_from_form(leave_id: str, topic: str, status: str, html: str):
         "topic": topic,
         "phone": capture(r"โทรศัพท์\s*(.*?)\s*ขอแสดงความนับถือ"),
         "start_date": start_iso,
-        "end_date": thai_date_to_iso(end) or start_iso,
+        "end_date": end_iso or start_iso,
         "record_date": record_iso,
         "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ตำแหน่ง"),
         "reason": capture(r"เนื่องจาก\s*(.*?)\s*ตั้งแต่วันที่"),
