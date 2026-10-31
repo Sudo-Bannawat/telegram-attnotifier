@@ -17,6 +17,7 @@ Python image). No extra configuration is required beyond the four secrets:
 import os
 import json
 import sys
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 import requests
@@ -37,6 +38,7 @@ USER = os.getenv("MYOFFICE_USER")
 PASS = os.getenv("MYOFFICE_PASS")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+RESET_NOTIFICATION_STATE = os.getenv("RESET_NOTIFICATION_STATE") == "true"
 
 if not all([USER, PASS, BOT_TOKEN, CHAT_ID]):
     print("⚠️ Missing one or more required environment variables.")
@@ -85,26 +87,23 @@ def login() -> requests.Session:
 # ---------------------------------------------------------------------------
 def parse_leave_page(html: str):
     soup = BeautifulSoup(html, "html.parser")
-    table = soup.find("table")
-    if not table:
+    tables = soup.find_all("table")
+    if not tables:
         raise ValueError("Leave table not found on page")
 
-    rows = []
-    for tr in table.find_all("tr")[1:]:  # skip header
-        cols = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
-        if not cols:
-            continue
-        # Expected column order (based on sample data):
-        # 0 ID, 1 ประเภทกิจกรรม, 2 รหัสหน่วยงาน (skip),
-        # 3 ชื่อ, 4 ประเภทการลา, 5 เริ่ม, 6 สิ้นสุด, 7 เหตุผล, 8 วันที่บันทึก,
-        # 9 ชื่อผู้ขอ, 10 จำนวน?, 11 ที่อยู่, 12 โทร, 13 สถานะ, 14 ไฟล์แนบ, ...
-        # The exact indices may vary – we use column names when available.
-        # For robustness we map by known header titles.
-        # Ignore layout/navigation tables.  A leave record always begins with
-        # numeric database ID; this stops accidental Telegram alerts from UI text.
-        if cols[0].strip().isdigit():
-            rows.append(cols)
-    return rows
+    candidates = []
+    for table in tables:
+        rows = []
+        for tr in table.find_all("tr"):
+            cols = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
+            # Ignore layout/navigation tables. A leave record starts with DB ID.
+            if cols and cols[0].strip().isdigit():
+                rows.append(cols)
+        if rows:
+            candidates.append(rows)
+    if not candidates:
+        raise ValueError("No leave records found; check MyOffice account permission")
+    return max(candidates, key=len)
 
 # ---------------------------------------------------------------------------
 # State persistence – a tiny JSON file storing the last known status per ID.
@@ -142,62 +141,98 @@ def leave_form_button(leave_id: str, leave_type: str):
         }]]
     }
 
+
+def leave_from_row(row: list[str]):
+    """Map `web_tkk6` columns used by the current MyOffice leave list."""
+    return {
+        "id": row[0],
+        "activity_type": row[1] if len(row) > 1 else "",
+        "leave_type": row[1] if len(row) > 1 else "",
+        "phone": row[5] if len(row) > 5 else "",
+        "start_date": row[6] if len(row) > 6 else "",
+        "end_date": row[7] if len(row) > 7 else "",
+        "record_date": row[9] if len(row) > 9 else "",
+        "requester_name": row[10] if len(row) > 10 else "",
+        "reason": row[12] if len(row) > 12 else "",
+        "school": row[4] if len(row) > 4 else "",
+        "address": row[17] if len(row) > 17 else "",
+        "status": row[21] if len(row) > 21 else "รอดำเนินการ",
+    }
+
+
+def leave_message(leave: dict, heading: str):
+    return (
+        f"<b>{heading}</b>\n"
+        f"<blockquote>🔖 <b>เลขที่ใบลา:</b> #{escape(leave['id'])}\n"
+        f"👤 <b>ผู้ยื่น:</b> {escape(leave['requester_name'])}\n"
+        f"🏷️ <b>ประเภท:</b> {escape(leave['leave_type'])}\n"
+        f"📅 <b>วันลา:</b> {escape(leave['start_date'])} — {escape(leave['end_date'])}\n"
+        f"💬 <b>เรื่อง:</b> {escape(leave['activity_type'])}\n"
+        f"📝 <b>เหตุผล:</b> {escape(leave['reason'])}\n"
+        f"🏫 <b>หน่วยงาน:</b> {escape(leave['school'])}\n"
+        f"📞 <b>โทร:</b> {escape(leave['phone'])}\n"
+        f"📍 <b>ที่อยู่:</b> {escape(leave['address'])}\n"
+        f"⏳ <b>สถานะ:</b> {escape(leave['status'])}</blockquote>\n"
+        f"<i>บันทึกเมื่อ {escape(leave['record_date'])}</i>"
+    )
+
+
+def is_after_today(leave: dict) -> bool:
+    try:
+        leave_date = date.fromisoformat(leave["start_date"])
+    except ValueError:
+        print(f"Skip leave #{leave['id']}: invalid start date {leave['start_date']!r}")
+        return False
+    bangkok = timezone(timedelta(hours=7))
+    return leave_date > datetime.now(bangkok).date()
+
+
+def save_notified_leave(leave: dict, heading: str):
+    result = send_telegram(
+        leave_message(leave, heading),
+        reply_markup=leave_form_button(leave["id"], leave["leave_type"]),
+    )
+    state[leave["id"]] = {
+        "status": leave["status"],
+        "telegram_message_id": result["result"]["message_id"],
+    }
+    save_state()
+
 # ---------------------------------------------------------------------------
 # Main workflow
 # ---------------------------------------------------------------------------
 def main():
+    global state
     session = login()
     resp = session.get(LEAVE_URL, timeout=15)
     resp.raise_for_status()
-    rows = parse_leave_page(resp.text)
-    if not rows:
-        print("⚠️ No leave rows found")
+    leaves = [leave_from_row(row) for row in parse_leave_page(resp.text)]
+
+    if RESET_NOTIFICATION_STATE:
+        # Manual reset: state must contain only future leave dates, regardless
+        # of approval result, so later decisions stay threaded to these messages.
+        state = {}
+        save_state()
+        future_leaves = sorted(
+            (leave for leave in leaves if is_after_today(leave)),
+            key=lambda leave: (leave["start_date"], int(leave["id"])),
+        )
+        print(f"Reset: sending {len(future_leaves)} leave notification(s) after today")
+        for leave in future_leaves:
+            save_notified_leave(leave, "📚 บันทึกใบลาหลังวันนี้")
         return
 
-    # Assume the newest request is the first data row after header.
-    newest = rows[0]
-    # Map columns – we use position based on the sample you gave.
-    # Adjust indices if the table layout changes.
-    ID = newest[0]
-    activity_type = newest[1]
-    # Skip column 2 (รหัสหน่วยงาน)
-    requester_name = newest[10] if len(newest) > 10 else ""
-    leave_type = newest[1] if len(newest) > 1 else ""
-    start_date = newest[6] if len(newest) > 6 else ""
-    end_date = newest[7] if len(newest) > 7 else ""
-    reason = newest[12] if len(newest) > 12 else ""
-    record_date = newest[9] if len(newest) > 9 else ""
-    phone = newest[5] if len(newest) > 5 else ""
-    school = newest[4] if len(newest) > 4 else ""
-    address = newest[17] if len(newest) > 17 else ""
-    status = newest[21] if len(newest) > 21 else "รอดำเนินการ"
+    # Normal scheduled check handles newest leave only.
+    leave = leaves[0]
+    ID = leave["id"]
+    status = leave["status"]
 
     # -------------------------------------------------------------------
     # 1️⃣ New request handling
     # -------------------------------------------------------------------
     entry = state_entry(ID)
     if ID not in state:
-        # First time we see this ID – send full info.
-        msg = (
-            f"<b>📝 มีใบลาใหม่</b>\n"
-            f"<blockquote>🔖 <b>เลขที่ใบลา:</b> #{escape(ID)}\n"
-            f"👤 <b>ผู้ยื่น:</b> {escape(requester_name)}\n"
-            f"🏷️ <b>ประเภท:</b> {escape(leave_type)}\n"
-            f"📅 <b>วันลา:</b> {escape(start_date)} — {escape(end_date)}\n"
-            f"💬 <b>เรื่อง:</b> {escape(activity_type)}\n"
-            f"📝 <b>เหตุผล:</b> {escape(reason)}\n"
-            f"🏫 <b>หน่วยงาน:</b> {escape(school)}\n"
-            f"📞 <b>โทร:</b> {escape(phone)}\n"
-            f"📍 <b>ที่อยู่:</b> {escape(address)}\n"
-            f"⏳ <b>สถานะ:</b> {escape(status)}</blockquote>\n"
-            f"<i>บันทึกเมื่อ {escape(record_date)}</i>"
-        )
-        result = send_telegram(msg, reply_markup=leave_form_button(ID, leave_type))
-        state[ID] = {
-            "status": status,
-            "telegram_message_id": result["result"]["message_id"],
-        }
-        save_state()
+        save_notified_leave(leave, "📝 มีใบลาใหม่")
         return
 
     # -------------------------------------------------------------------

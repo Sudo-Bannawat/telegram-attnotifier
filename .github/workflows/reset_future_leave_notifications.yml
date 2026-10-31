@@ -1,0 +1,40 @@
+name: Reset Future Leave Notifications
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  reset-notifications:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Send all future leave notifications and reset state
+        env:
+          MYOFFICE_USER: ${{ secrets.MYOFFICE_USER }}
+          MYOFFICE_PASS: ${{ secrets.MYOFFICE_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RESET_NOTIFICATION_STATE: 'true'
+          MYOFFICE_LEAVE_CATEGORY: '187'
+        run: python check_leave.py
+
+      - name: Commit reset state
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add leave_state.json
+          git diff --quiet && echo 'No state changes' || (git commit -m "Reset future leave notification state" && git push)
