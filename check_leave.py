@@ -27,7 +27,11 @@ from bs4 import BeautifulSoup
 # ---------------------------------------------------------------------------
 BASE_URL = "http://202.139.198.149/myoffice/ubonrat"
 LOGIN_URL = f"{BASE_URL}/index.php?name=user&file=login"
-LEAVE_URL = f"{BASE_URL}/index.php?name=tkk6"
+LEAVE_CATEGORY = os.getenv("MYOFFICE_LEAVE_CATEGORY", "187")
+LEAVE_URL = (
+    f"{BASE_URL}/index.php?name=tkk6&op=tkk6_read&category={LEAVE_CATEGORY}"
+)
+LEAVE_FORM_URL = f"{BASE_URL}/popup2.php?name=tkk6&file=readtkk6_1&id={{leave_id}}"
 
 USER = os.getenv("MYOFFICE_USER")
 PASS = os.getenv("MYOFFICE_PASS")
@@ -41,7 +45,11 @@ if not all([USER, PASS, BOT_TOKEN, CHAT_ID]):
 # ---------------------------------------------------------------------------
 # Helper: send a Telegram message (HTML formatting)
 # ---------------------------------------------------------------------------
-def send_telegram(text: str, reply_to_message_id: int | None = None):
+def send_telegram(
+    text: str,
+    reply_to_message_id: int | None = None,
+    reply_markup: dict | None = None,
+):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -53,6 +61,8 @@ def send_telegram(text: str, reply_to_message_id: int | None = None):
         payload["reply_parameters"] = json.dumps(
             {"message_id": reply_to_message_id}, ensure_ascii=False
         )
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
     r = requests.post(url, data=payload, timeout=10)
     r.raise_for_status()
     return r.json()
@@ -119,6 +129,19 @@ def state_entry(leave_id: str):
         return {"status": entry}
     return entry
 
+
+def leave_form_button(leave_id: str, leave_type: str):
+    """Return a Telegram button only for the three leave-form types."""
+    supported_types = {"ป่วย", "ลาคลอดบุตร", "กิจส่วนตัว"}
+    if leave_type.strip() not in supported_types:
+        return None
+    return {
+        "inline_keyboard": [[{
+            "text": "📄 เปิดแบบฟอร์มใบลา",
+            "url": LEAVE_FORM_URL.format(leave_id=leave_id),
+        }]]
+    }
+
 # ---------------------------------------------------------------------------
 # Main workflow
 # ---------------------------------------------------------------------------
@@ -169,7 +192,7 @@ def main():
             f"⏳ <b>สถานะ:</b> {escape(status)}</blockquote>\n"
             f"<i>บันทึกเมื่อ {escape(record_date)}</i>"
         )
-        result = send_telegram(msg)
+        result = send_telegram(msg, reply_markup=leave_form_button(ID, leave_type))
         state[ID] = {
             "status": status,
             "telegram_message_id": result["result"]["message_id"],
