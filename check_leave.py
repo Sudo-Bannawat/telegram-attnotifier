@@ -17,6 +17,7 @@ Python image). No extra configuration is required beyond the four secrets:
 import os
 import json
 import sys
+from html import escape
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
@@ -25,7 +26,7 @@ from bs4 import BeautifulSoup
 # Configuration via environment (GitHub Secrets)
 # ---------------------------------------------------------------------------
 BASE_URL = "http://202.139.198.149/myoffice/ubonrat"
-LOGIN_URL = f"{BASE_URL}/index.php"
+LOGIN_URL = f"{BASE_URL}/index.php?name=user&file=login"
 LEAVE_URL = f"{BASE_URL}/index.php?name=tkk6"
 
 USER = os.getenv("MYOFFICE_USER")
@@ -40,7 +41,7 @@ if not all([USER, PASS, BOT_TOKEN, CHAT_ID]):
 # ---------------------------------------------------------------------------
 # Helper: send a Telegram message (HTML formatting)
 # ---------------------------------------------------------------------------
-def send_telegram(text: str):
+def send_telegram(text: str, reply_to_message_id: int | None = None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -48,6 +49,10 @@ def send_telegram(text: str):
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+    if reply_to_message_id:
+        payload["reply_parameters"] = json.dumps(
+            {"message_id": reply_to_message_id}, ensure_ascii=False
+        )
     r = requests.post(url, data=payload, timeout=10)
     r.raise_for_status()
     return r.json()
@@ -62,7 +67,7 @@ def login() -> requests.Session:
     data = {"username": USER, "password": PASS}
     resp = s.post(LOGIN_URL, data=data, timeout=15)
     resp.raise_for_status()
-    # A successful login will set a PHPSESSID cookie – we trust the response.
+    # Login endpoint returns the authenticated dashboard and PHPSESSID cookie.
     return s
 
 # ---------------------------------------------------------------------------
@@ -85,7 +90,10 @@ def parse_leave_page(html: str):
         # 9 ชื่อผู้ขอ, 10 จำนวน?, 11 ที่อยู่, 12 โทร, 13 สถานะ, 14 ไฟล์แนบ, ...
         # The exact indices may vary – we use column names when available.
         # For robustness we map by known header titles.
-        rows.append(cols)
+        # Ignore layout/navigation tables.  A leave record always begins with
+        # numeric database ID; this stops accidental Telegram alerts from UI text.
+        if cols[0].strip().isdigit():
+            rows.append(cols)
     return rows
 
 # ---------------------------------------------------------------------------
@@ -102,6 +110,14 @@ else:
 def save_state():
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def state_entry(leave_id: str):
+    """Read old string state safely; new state also stores Telegram message ID."""
+    entry = state.get(leave_id, {})
+    if isinstance(entry, str):
+        return {"status": entry}
+    return entry
 
 # ---------------------------------------------------------------------------
 # Main workflow
@@ -122,48 +138,49 @@ def main():
     ID = newest[0]
     activity_type = newest[1]
     # Skip column 2 (รหัสหน่วยงาน)
-    requester_name = newest[4] if len(newest) > 4 else ""
-    leave_type = newest[5] if len(newest) > 5 else ""
+    requester_name = newest[10] if len(newest) > 10 else ""
+    leave_type = newest[1] if len(newest) > 1 else ""
     start_date = newest[6] if len(newest) > 6 else ""
     end_date = newest[7] if len(newest) > 7 else ""
-    reason = newest[8] if len(newest) > 8 else ""
+    reason = newest[12] if len(newest) > 12 else ""
     record_date = newest[9] if len(newest) > 9 else ""
-    phone = newest[12] if len(newest) > 12 else ""
-    school = newest[10] if len(newest) > 10 else ""
-    address = newest[11] if len(newest) > 11 else ""
-    status = newest[13] if len(newest) > 13 else ""
-    attachment = newest[14] if len(newest) > 14 else ""
+    phone = newest[5] if len(newest) > 5 else ""
+    school = newest[4] if len(newest) > 4 else ""
+    address = newest[17] if len(newest) > 17 else ""
+    status = newest[21] if len(newest) > 21 else "รอดำเนินการ"
 
     # -------------------------------------------------------------------
     # 1️⃣ New request handling
     # -------------------------------------------------------------------
+    entry = state_entry(ID)
     if ID not in state:
         # First time we see this ID – send full info.
         msg = (
-            f"<b>📝 ใบลาขั้นแรก</b>\n"
-            f"<b>ID:</b> {ID}\n"
-            f"<b>กิจกรรม:</b> {activity_type}\n"
-            f"<b>ชื่อผู้ขอ:</b> {requester_name}\n"
-            f"<b>ประเภทล:</b> {leave_type}\n"
-            f"<b>ตั้งแต่:</b> {start_date} <b>ถึง:</b> {end_date}\n"
-            f"<b>เหตุผล:</b> {reason}\n"
-            f"<b>วันที่บันทึก:</b> {record_date}\n"
-            f"<b>โรงเรียน/หน่วยงาน:</b> {school}\n"
-            f"<b>ที่อยู่:</b> {address}\n"
-            f"<b>โทร:</b> {phone}\n"
-            f"<b>สถานะ:</b> {status}\n"
+            f"<b>📝 มีใบลาใหม่</b>\n"
+            f"<blockquote>🔖 <b>เลขที่ใบลา:</b> #{escape(ID)}\n"
+            f"👤 <b>ผู้ยื่น:</b> {escape(requester_name)}\n"
+            f"🏷️ <b>ประเภท:</b> {escape(leave_type)}\n"
+            f"📅 <b>วันลา:</b> {escape(start_date)} — {escape(end_date)}\n"
+            f"💬 <b>เรื่อง:</b> {escape(activity_type)}\n"
+            f"📝 <b>เหตุผล:</b> {escape(reason)}\n"
+            f"🏫 <b>หน่วยงาน:</b> {escape(school)}\n"
+            f"📞 <b>โทร:</b> {escape(phone)}\n"
+            f"📍 <b>ที่อยู่:</b> {escape(address)}\n"
+            f"⏳ <b>สถานะ:</b> {escape(status)}</blockquote>\n"
+            f"<i>บันทึกเมื่อ {escape(record_date)}</i>"
         )
-        if attachment:
-            msg += f"<b>ไฟล์แนบ:</b> {attachment}\n"
-        send_telegram(msg)
-        state[ID] = status
+        result = send_telegram(msg)
+        state[ID] = {
+            "status": status,
+            "telegram_message_id": result["result"]["message_id"],
+        }
         save_state()
         return
 
     # -------------------------------------------------------------------
     # 2️⃣ Status change handling
     # -------------------------------------------------------------------
-    prev_status = state.get(ID, "")
+    prev_status = entry.get("status", "")
     if status != prev_status:
         # Only react to approval/rejection.
         decision = None
@@ -172,10 +189,10 @@ def main():
         elif status.lower() in ["ปฏิเสธ", "reject", "rejected"]:
             decision = "❌ ปฏิเสธ"
         if decision:
-            reply = f"<b>{decision}</b> (ใบลา ID {ID})"
-            send_telegram(reply)
+            reply = f"<b>{decision}</b>\n<blockquote>ใบลาเลขที่ #{escape(ID)}</blockquote>"
+            send_telegram(reply, entry.get("telegram_message_id"))
         # Update stored status regardless of whether we sent a reply.
-        state[ID] = status
+        state[ID] = {**entry, "status": status}
         save_state()
 
 if __name__ == "__main__":
