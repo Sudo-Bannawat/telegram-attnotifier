@@ -40,4 +40,4 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add leave_state.json
-          git diff --quiet && echo 'No state changes' || (git commit -m "Record daily leave report" && git push)
+          git diff --cached --quiet && echo 'No state changes' || (git commit -m "Record daily leave report" && git push)
