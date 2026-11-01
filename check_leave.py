@@ -46,6 +46,13 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RESET_NOTIFICATION_STATE = os.getenv("RESET_NOTIFICATION_STATE") == "true"
 DAILY_LEAVE_REPORT = os.getenv("DAILY_LEAVE_REPORT") == "true"
 
+# Probing of leave forms that are no longer listed in the "เอกสารรอดำเนินการ" box.
+BLANK_DATE = "1970-01-01"      # empty form renders as ๑ ม.ค. ๒๕๑๓
+PROBE_LOOKAHEAD = 8            # stop after this many blank IDs in a row
+PROBE_MAX = 300                # hard cap of IDs probed per run
+STUCK_ALERT_AFTER = 8          # runs failing on the same ID before alerting
+PENDING_MAX_AGE_DAYS = 45      # stop re-opening undecided leaves after this
+
 if not all([USER, PASS, BOT_TOKEN, CHAT_ID]):
     print("⚠️ Missing one or more required environment variables.")
     sys.exit(1)
@@ -88,7 +95,7 @@ def login() -> requests.Session:
     if not sessid:
         raise ValueError("Login failed: PHPSESSID cookie not received")
 
-    if "\u0e0a\u0e37\u0e48\u0e2d\u0e1c\u0e39\u0e49\u0e43\u0e0a\u0e49 \u0e2b\u0e23\u0e37\u0e2d \u0e23\u0e27\u0e31\u0e2a\u0e1c\u0e48\u0e32\u0e19 \u0e44\u0e21\u0e48\u0e16\u0e39\u0e01\u0e15\u0e49\u0e2d\u0e07" in resp.text:
+    if "\u0e0a\u0e37\u0e48\u0e2d\u0e1c\u0e39\u0e49\u0e43\u0e0a\u0e49 \u0e2b\u0e23\u0e37\u0e2d \u0e23\u0e27\u0e31\u0e2a\u0e1c\u0e48\u0e32\u0e19 \u0e44\u0e21\u0e48\u0e16\u0e39\u0e01\u0e15\u0e49\u0e2" in resp.text:
         raise PermissionError("Login failed: Incorrect username or password")
 
     print(f"Logged in successfully (PHPSESSID={sessid[:6]}...)")
@@ -139,6 +146,7 @@ def thai_date_to_iso(value: str) -> str:
         return ""
 
     clean_val = value.translate(THAI_DIGITS)
+    clean_val = re.sub(r"(?<=\d)[oO]|[oO](?=\d)", "0", clean_val)  # "๓o" -> "30"
     match = THAI_DATE.search(clean_val)
     if not match:
         return ""
@@ -184,13 +192,16 @@ def leave_from_form(leave_id: str, topic: str, status: str, html: str):
     return {
         "id": leave_id,
         "activity_type": topic,
-        "leave_type": capture(r"ขอลา\s*(.*?)\s*เนื่องจาก"),
+        # "ขอลา <type> เนื่องจาก" - the type is separated by spaces, which skips the
+        # earlier subject line "เรื่อง ขอลากิจส่วนตัว".
+        "leave_type": capture(r"ขอลา\s+(\S+(?:\s\S+)?)\s+เนื่องจาก") or capture(r"ขอลา\s*(.*?)\s*เนื่องจาก"),
         "topic": topic,
-        "phone": capture(r"โทรศัพท์\s*(.*?)\s*ขอแสดงความนับถือ"),
+        # The system writes Thai zero as the Latin letter "o".
+        "phone": capture(r"โทรศัพท์\s*(.*?)\s*ขอแสดงความนับถือ").replace("o", "0").translate(THAI_DIGITS),
         "start_date": start_iso,
         "end_date": end_iso or start_iso,
         "record_date": record_iso,
-        "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ตำแหน่ง"),
+        "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ต���แหน่ง"),
         "reason": capture(r"เนื่องจาก\s*(.*?)\s*ตั้งแต่วันที่"),
         "school": capture(r"สังกัด\s*(.*?)\s*ขอลา"),
         "address": capture(r"ระหว่างลาติดต่อข้าพเจ้าได้ที่\s*(.*?)\s*โทรศัพท์"),
@@ -246,7 +257,6 @@ def parse_leave_page(html: str, session: requests.Session):
                 rows.append(cols)
         if rows:
             candidates.append(rows)
-    # If there are no leave data rows, check if the table or page text states 0 items
     text_content = soup.get_text(" ", strip=True)
     if not candidates:
         if "จำนวน 0" in text_content or "จำนวน 0" in html:
@@ -366,7 +376,7 @@ def status_kind(status: str) -> str:
         return "cancelled"
     if value in {"อนุญาต", "อนุญาติ", "อนุมัติ", "approved", "accept"}:
         return "approved"
-    if value in {"ไม่อนุญาต", "ไม่อนุญาติ", "ปฏิเสธ", "reject", "rejected"}:
+    if value in {"ไม่อนุญาต", "ไม่อนุญาติ", "ไม่อนุมัติ", "ปฏิเสธ", "reject", "rejected"}:
         return "rejected"
     return "pending"
 
@@ -469,8 +479,138 @@ def save_notified_leave(leave: dict, heading: str):
     state[leave["id"]] = {
         "status": leave["status"],
         "telegram_message_id": result["result"]["message_id"],
+        "seen": bangkok_today().isoformat(),
     }
     save_state()
+
+# ---------------------------------------------------------------------------
+# Probing leave forms directly (approved leaves drop out of the dashboard box)
+# ---------------------------------------------------------------------------
+KNOWN_STATUSES = (
+    "ไม่อนุญาติ", "ไม่อนุญาต", "ไม่อนุมัติ", "อนุญาติ", "อนุญาต", "อนุมัติ",
+    "ปฏิเสธ", "ยกเลิก",
+)
+ORDER_RE = re.compile(r"คำสั่ง\s*(" + "|".join(KNOWN_STATUSES) + ")")
+
+
+def form_status(html: str) -> str:
+    """Read the director's decision from the popup form itself.
+
+    Layout (confirmed on id=1141, a leave approved by the director): the
+    "ความเห็นผู้บังคับบัญชา" column lists each commander's remark in turn
+    (ทราบ, เพื่อโปรดพิจารณา, ...), and once the director decides, a "คำสั่ง"
+    block follows with the chosen option next to images/tick.png.
+    No "คำสั่ง" block yet -> still undecided.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for img in soup.find_all("img"):
+        if "tick" in img.get("src", ""):
+            label = img.parent.get_text(" ", strip=True) if img.parent else ""
+            for word in KNOWN_STATUSES:
+                if label.startswith(word):
+                    return word
+    text = " ".join(soup.stripped_strings)
+    match = ORDER_RE.search(text)
+    if match:
+        return match.group(1)
+    return "เสนอผู้บริหาร" if "เพื่อโปรดพิจารณา" in text else "รอดำเนินการ"
+
+
+def fetch_leave_form(session: requests.Session, leave_id: str, status: str | None = None):
+    """Open readtkk6_1&id=N. Returns (kind, leave) with kind in ok/blank/error.
+
+    * blank  - the empty template (dates read ๑ ม.ค. ๒๕๑๓): safe to skip.
+    * error  - network/HTTP failure or a page we do not recognise: the caller
+               must NOT move the watermark past this ID.
+    An expired session raises PermissionError and aborts the whole run.
+    """
+    try:
+        resp = session.get(LEAVE_FORM_URL.format(leave_id=leave_id), timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"fetch #{leave_id} failed: {exc}")
+        return "error", None
+    if "ท่านไม่ใช่สมาชิก" in resp.text:
+        raise PermissionError("MyOffice session unauthenticated: 'ท่านไม่ใช่สมาชิก'")
+    text = " ".join(BeautifulSoup(resp.text, "html.parser").stripped_strings)
+    if "ข้าพเจ้า" not in text:
+        print(f"fetch #{leave_id}: unrecognised page: {text[:120]!r}")
+        return "error", None
+    topic_match = re.search(r"เรื่อง\s*(.*?)\s*เรียน", text)
+    topic = topic_match.group(1).strip() if topic_match else ""
+    leave = leave_from_form(leave_id, topic, status or form_status(resp.text), resp.text)
+    if BLANK_DATE in (leave["record_date"], leave["start_date"]):
+        return "blank", None
+    if not leave["requester_name"] or not leave["start_date"]:
+        print(f"fetch #{leave_id}: form parsed incompletely: {leave}")
+        return "error", None
+    return "ok", leave
+
+
+def probe_new_leaves(session: requests.Session, dashboard: dict, watermark: int):
+    """Walk IDs watermark+1, +2, ... and return (leaves, blocked_id).
+
+    Dashboard rows are reused as-is. Other IDs are opened directly. Blank
+    forms are skipped; the walk ends after PROBE_LOOKAHEAD blanks in a row
+    (and past the highest dashboard ID), or at the first fetch error, which
+    is returned as blocked_id so the watermark never jumps over it.
+    """
+    top_dashboard = max((int(i) for i in dashboard if int(i) > watermark), default=0)
+    found, misses, n = [], 0, watermark + 1
+    while (misses < PROBE_LOOKAHEAD or n <= top_dashboard) and n <= watermark + PROBE_MAX:
+        leave_id = str(n)
+        if leave_id in dashboard:
+            kind, leave = "ok", dashboard[leave_id]
+        else:
+            kind, leave = fetch_leave_form(session, leave_id)
+        if kind == "error":
+            return found, n
+        if kind == "ok":
+            found.append(leave)
+            misses = 0
+        else:
+            misses += 1
+        n += 1
+    return found, None
+
+
+def track_stuck(blocked_id: int | None):
+    """Alert once if the same ID keeps failing, so a stuck watermark is not silent."""
+    if blocked_id is None:
+        state.pop("_stuck", None)
+        return
+    stuck = state.get("_stuck", {})
+    count = stuck.get("count", 0) + 1 if stuck.get("id") == blocked_id else 1
+    state["_stuck"] = {"id": blocked_id, "count": count}
+    save_state()
+    if count == STUCK_ALERT_AFTER:
+        send_telegram(
+            f"⚠️ <b>บอทใบลาดึงฟอร์ม #{blocked_id} ไม่สำเร็จ {count} รอบติด</b>\n"
+            "ยังไม่เลื่อน watermark ข้ามเลขนี้ — ตรวจสอบฟอร์มหรือล็อก GitHub Actions"
+        )
+
+
+def pending_to_reopen(dashboard: dict) -> list[str]:
+    """Tracked leaves still undecided and no longer on the dashboard."""
+    today = bangkok_today()
+    ids = []
+    for key in sorted((k for k in state if k.isdigit()), key=int):
+        if key in dashboard:
+            continue
+        entry = state_entry(key)
+        if status_kind(entry.get("status", "")) != "pending":
+            continue
+        seen = entry.get("seen")
+        if not seen:  # old entries: start the clock now
+            state[key] = {**entry, "seen": today.isoformat()}
+            continue
+        try:
+            age = (today - date.fromisoformat(seen)).days
+        except ValueError:
+            age = 0
+        if age <= PENDING_MAX_AGE_DAYS:
+            ids.append(key)
+    return ids
 
 # ---------------------------------------------------------------------------
 # Main workflow
@@ -505,22 +645,33 @@ def main():
 
     # Normal scheduled check: handle every leave, oldest first.
     leaves.sort(key=leave_num)
+    dashboard = {l["id"]: l for l in leaves}
 
-    # 1) New requests: any unseen ID above the watermark. Stop on the first
-    # failure so unsent leaves stay above the watermark and retry next run.
+    # 1) New requests. Approved leaves leave the "เอกสารรอดำเนินการ" box, so the
+    # dashboard alone misses them: walk IDs after the watermark and open each
+    # form. The watermark only advances over leaves that were announced, never
+    # over an ID whose fetch failed.
     watermark = known_watermark()
     if watermark:
-        new_leaves = [l for l in leaves if l["id"] not in state and leave_num(l) > watermark]
+        new_leaves, blocked = probe_new_leaves(session, dashboard, watermark)
+        new_leaves = [l for l in new_leaves if l["id"] not in state]
     else:
-        new_leaves = leaves[-1:]  # empty state: announce only the newest
+        new_leaves, blocked = leaves[-1:], None  # empty state: announce only the newest
     for leave in new_leaves:
         save_notified_leave(leave, "📝 มีใบลาใหม่")
         state["_watermark"] = max(int(state.get("_watermark", 0)), leave_num(leave))
         save_state()
         time.sleep(1.5)  # stay under Telegram's per-chat rate limit
+    track_stuck(blocked)
 
-    # 2) Status changes on every tracked leave.
-    for leave in leaves:
+    # 2) Status changes: dashboard rows, plus undecided leaves that already
+    # dropped out of the dashboard (re-opened until their status changes).
+    current = list(leaves)
+    for leave_id in pending_to_reopen(dashboard):
+        kind, leave = fetch_leave_form(session, leave_id)
+        if kind == "ok":
+            current.append(leave)
+    for leave in current:
         ID = leave["id"]
         if ID not in state:
             continue
