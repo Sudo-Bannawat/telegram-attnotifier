@@ -13,6 +13,8 @@ Optional:
   RESET_APPROVAL_STATE         "true" to re-announce all current pending items
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -38,12 +40,28 @@ APPROVAL_URL = (
 APPROVAL_POPUP_URL = (
     f"{BASE_URL}/popup2.php?name=approval&file=readapproval&id={{approval_id}}"
 )
+DOC_PROXY_URL = os.getenv("DOC_PROXY_URL", "").rstrip("/")
+LINK_SECRET = os.getenv("LINK_SECRET", "")
 
 USER = os.getenv("MYOFFICE_USER")
 PASS = os.getenv("MYOFFICE_PASS")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RESET_APPROVAL_STATE = os.getenv("RESET_APPROVAL_STATE") == "true"
+
+
+def signed_doc_url(aid: str, days: int = 30) -> str:
+    aid = str(aid).strip()
+    if not aid.isdigit():
+        raise ValueError(f"aid must be a numeric string without padding: {aid!r}")
+
+    exp = int(time.time()) + days * 86400
+    sig = hmac.new(
+        LINK_SECRET.encode(),
+        f"{aid}.{exp}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{DOC_PROXY_URL}/doc/{aid}?exp={exp}&sig={sig}"
 
 
 def require_env() -> None:
@@ -296,16 +314,27 @@ def approval_reply_message(aid: str, decision_title: str, status_text: str) -> s
 
 def form_button(aid: str) -> dict:
     """ปุ่ม Inline Keyboard กดเปิดดูเอกสารจริงใน MyOffice"""
+    if DOC_PROXY_URL and LINK_SECRET:
+        url = signed_doc_url(aid)
+    else:
+        url = APPROVAL_POPUP_URL.format(approval_id=aid)
+        if not getattr(form_button, "_warned_missing_doc_settings", False):
+            print("⚠️ DOC_PROXY_URL/LINK_SECRET missing; falling back to legacy popup URL.")
+            form_button._warned_missing_doc_settings = True
+
     return {
         "inline_keyboard": [
             [
                 {
                     "text": "🔗 เปิดเอกสารใน MyOffice",
-                    "url": APPROVAL_POPUP_URL.format(approval_id=aid),
+                    "url": url,
                 }
             ]
         ]
     }
+
+
+form_button._warned_missing_doc_settings = False
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +345,6 @@ state: dict = {}
 if STATE_FILE.exists():
     content = STATE_FILE.read_text(encoding="utf-8-sig").strip()
     state = json.loads(content) if content else {}
-
 
 def save_state() -> None:
     STATE_FILE.write_text(
