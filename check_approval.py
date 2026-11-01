@@ -45,9 +45,22 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RESET_APPROVAL_STATE = os.getenv("RESET_APPROVAL_STATE") == "true"
 
-if not all([USER, PASS, BOT_TOKEN, CHAT_ID]):
-    print("⚠️  Missing one or more required environment variables.")
-    sys.exit(1)
+
+def require_env() -> None:
+    missing = [
+        name
+        for name, value in {
+            "MYOFFICE_USER": USER,
+            "MYOFFICE_PASS": PASS,
+            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+            "TELEGRAM_CHAT_ID": CHAT_ID,
+        }.items()
+        if not value
+    ]
+    if missing:
+        print(f"⚠️  Missing one or more required environment variables: {', '.join(missing)}")
+        raise SystemExit(1)
+
 
 # ---------------------------------------------------------------------------
 # Telegram
@@ -113,7 +126,15 @@ def parse_listing(html: str) -> list[dict]:
     seen: set[str] = set()
 
     for tr in soup.find_all("tr"):
-        # Find the popup link in this row
+        cells = [
+            td.get_text(" ", strip=True)
+            for td in tr.find_all(["td", "th"], recursive=False)
+        ]
+        print(f"DEBUG approval row cells: {cells}")
+        # Ignore outer layout rows; the real table rows contain 5-7 direct cells
+        if not 5 <= len(cells) <= 7:
+            continue
+
         popup_href = ""
         for a in tr.find_all("a"):
             href = a.get("href", "")
@@ -129,9 +150,6 @@ def parse_listing(html: str) -> list[dict]:
             continue
         seen.add(aid)
 
-        cells = [td.get_text(" ", strip=True) for td in tr.find_all(["td", "th"])]
-        # Row has 5 cells: เรื่อง | เจ้าของเรื่อง | ผู้ผ่านแฟ้ม | สถานะ | การปฏิบัติ
-        # สถานะ is index 3 (0-based)
         status = cells[3].strip() if len(cells) > 3 else "รอดำเนินการ"
         rows.append({"id": aid, "status": status, "popup_href": popup_href})
 
@@ -183,6 +201,7 @@ def parse_popup(html: str, aid: str) -> dict:
     vehicle = _cap(r"โดยยานพาหนะ\s+(.*?)\s+(?:และมีความประสงค์|ไม่ขอเบิก|ขอเบิก)", text)
     budget = "ขอเบิก" if "ขอเบิก" in text and "ไม่ขอเบิก" not in text else "ไม่ขอเบิก"
     record_date = _cap(r"วันที่\s+([\d๐-๙o]+\s+[ก-๙]+\s+[\d๐-๙]+)", text)
+    record_date = record_date.replace("o", "0").replace("O", "0")
 
     return {
         "id": aid,
@@ -339,6 +358,7 @@ def notify_new(rec: dict, detail: dict, heading: str) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     global state
+    require_env()
     session = login()
 
     resp = session.get(APPROVAL_URL, timeout=15)
