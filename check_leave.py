@@ -472,7 +472,15 @@ def main():
     session = login()
     resp = session.get(LEAVE_URL, timeout=15)
     resp.raise_for_status()
-    print(f"LEAVE_URL fetched: status={resp.status_code}, len={len(resp.text)}, snippet={resp.text[:300]!r}")
+    soup_debug = BeautifulSoup(resp.text, "html.parser")
+    tables_debug = soup_debug.find_all("table")
+    print(f"DEBUG: tables count={len(tables_debug)}")
+    for i, t in enumerate(tables_debug):
+        rows_debug = t.find_all("tr")
+        print(f"DEBUG: table[{i}] rows={len(rows_debug)}")
+        for r in rows_debug[:5]:
+            cells = [c.get_text(' ', strip=True) for c in r.find_all(['td', 'th'])]
+            print(f"  row: {cells[:6]}")
     leaves = [leave_from_row(row) for row in parse_leave_page(resp.text, session)]
 
     if RESET_NOTIFICATION_STATE:
