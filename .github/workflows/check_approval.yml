@@ -39,6 +39,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MYOFFICE_APPROVAL_CATEGORY: '187'
           RESET_APPROVAL_STATE: ${{ github.event.inputs.reset_approval_state || 'false' }}
+          LINK_SECRET: ${{ secrets.LINK_SECRET }}
+          DOC_PROXY_URL: ${{ secrets.DOC_PROXY_URL }}
         run: |
           python check_approval.py
 
