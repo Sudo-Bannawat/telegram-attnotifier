@@ -204,7 +204,7 @@ def leave_from_form(leave_id: str, topic: str, status: str, html: str):
         "start_date": start_iso,
         "end_date": end_iso or start_iso,
         "record_date": record_iso,
-        "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ตำแห��่ง"),
+        "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ตำแหน่ง"),
         "reason": capture(r"เนื่องจาก\s*(.*?)\s*ตั้งแต่วันที่"),
         "school": capture(r"สังกัด\s*(.*?)\s*ขอลา"),
         "address": capture(r"ระหว่างลาติดต่อข้าพเจ้าได้ที่\s*(.*?)\s*โทรศัพท์"),
