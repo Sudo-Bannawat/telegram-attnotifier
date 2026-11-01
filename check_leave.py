@@ -548,12 +548,12 @@ def fetch_leave_form(session: requests.Session, leave_id: str, status: str | Non
 
 
 def probe_new_leaves(session: requests.Session, dashboard: dict, watermark: int):
-    """Walk IDs watermark+1, +2, ... and return (leaves, blocked_id).
+    """Walk IDs after the watermark and return (leaves, blocked_id, scanned_through).
 
-    Dashboard rows are reused as-is. Other IDs are opened directly. Blank
-    forms are skipped; the walk ends after PROBE_LOOKAHEAD blanks in a row
-    (and past the highest dashboard ID), or at the first fetch error, which
-    is returned as blocked_id so the watermark never jumps over it.
+    Dashboard rows are reused as-is. Other IDs are opened directly. Confirmed
+    blank forms are safe to pass, but an ID whose fetch fails blocks progress.
+    Returning scanned_through lets the caller persist progress across blank IDs
+    without ever moving past an ID that could not be fetched.
     """
     top_dashboard = max((int(i) for i in dashboard if int(i) > watermark), default=0)
     found, misses, n = [], 0, watermark + 1
@@ -564,15 +564,14 @@ def probe_new_leaves(session: requests.Session, dashboard: dict, watermark: int)
         else:
             kind, leave = fetch_leave_form(session, leave_id)
         if kind == "error":
-            return found, n
+            return found, n, n - 1
         if kind == "ok":
             found.append(leave)
             misses = 0
         else:
             misses += 1
         n += 1
-    return found, None
-
+    return found, None, n - 1
 
 def track_stuck(blocked_id: int | None):
     """Alert once if the same ID keeps failing, so a stuck watermark is not silent."""
@@ -653,15 +652,21 @@ def main():
     # over an ID whose fetch failed.
     watermark = known_watermark()
     if watermark:
-        new_leaves, blocked = probe_new_leaves(session, dashboard, watermark)
+        new_leaves, blocked, scanned_through = probe_new_leaves(session, dashboard, watermark)
         new_leaves = [l for l in new_leaves if l["id"] not in state]
     else:
         new_leaves, blocked = leaves[-1:], None  # empty state: announce only the newest
+        scanned_through = leave_num(new_leaves[-1]) if new_leaves else watermark
     for leave in new_leaves:
         save_notified_leave(leave, "📝 มีใบลาใหม่")
         state["_watermark"] = max(int(state.get("_watermark", 0)), leave_num(leave))
         save_state()
         time.sleep(1.5)  # stay under Telegram's per-chat rate limit
+
+    # Advance over IDs confirmed to be blank, but never over a fetch failure.
+    # This is essential: otherwise every run retries the same blank IDs forever.
+    state["_watermark"] = max(int(state.get("_watermark", 0)), scanned_through)
+    save_state()
     track_stuck(blocked)
 
     # 2) Status changes: dashboard rows, plus undecided leaves that already
