@@ -227,39 +227,65 @@ def status_kind(status: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Telegram message builders
+# Telegram Message Builders (Rich Formatting)
 # ---------------------------------------------------------------------------
 def approval_message(rec: dict, detail: dict, heading: str) -> str:
-    days_txt = f" ({escape(detail['days'])} วัน)" if detail.get("days") else ""
+    # จัดการส่วนข้อมูลประกอบ (ผู้ร่วมเดินทาง)
+    companions = detail.get("companions", "").strip()
     companions_txt = (
-        f"\n👥 <b>พร้อมด้วย:</b> {escape(detail['companions'])}"
-        if detail.get("companions")
+        f"\n👥 <b>ร่วมเดินทาง:</b> {escape(companions)}"
+        if companions and companions != "-"
         else ""
     )
+
+    # จัดการจำนวนวัน
+    days_val = detail.get("days", "").strip()
+    days_txt = f" <i>({escape(days_val)} วัน)</i>" if days_val else ""
+
+    # จัดรูปแบบข้อความหลักสไตล์ Rich Document
     return (
         f"<b>{heading}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🔖 <b>เลขที่คำขอ:</b> <code>#{escape(rec['id'])}</code>\n"
+        f"👤 <b>ผู้ยื่นคำขอ:</b> <b>{escape(detail['requester_name'])}</b>\n"
+        f"💼 <b>ตำแหน่ง:</b> {escape(detail['position'])}"
+        f"{companions_txt}\n\n"
+        f"<b>📌 รายละเอียดการไปราชการ</b>\n"
         f"<blockquote>"
-        f"🔖 <b>เลขที่:</b> #{escape(rec['id'])}\n"
-        f"👤 <b>ผู้ยื่น:</b> {escape(detail['requester_name'])}\n"
-        f"🎓 <b>ตำแหน่ง:</b> {escape(detail['position'])}"
-        f"{companions_txt}\n"
-        f"📋 <b>เรื่อง:</b> {escape(detail['purpose'])}\n"
-        f"📍 <b>สถานที่:</b> {escape(detail['destination'])}{days_txt}\n"
-        f"📅 <b>วันที่:</b> {escape(detail['start_date'])} — {escape(detail['end_date'])}\n"
-        f"🚗 <b>พาหนะ:</b> {escape(detail['vehicle'])}\n"
-        f"💰 <b>ค่าใช้จ่าย:</b> {escape(detail['budget'])}\n"
-        f"⏳ <b>สถานะ:</b> {escape(rec['status'])}"
+        f"📝 <b>วัตถุประสงค์:</b> {escape(detail['purpose'])}\n"
+        f"📍 <b>สถานที่:</b> {escape(detail['destination'])}\n"
+        f"📅 <b>ช่วงเวลา:</b> {escape(detail['start_date'])} — {escape(detail['end_date'])}{days_txt}\n"
+        f"🚘 <b>พาหนะ:</b> {escape(detail['vehicle'])}\n"
+        f"💳 <b>งบประมาณ:</b> {escape(detail['budget'])}\n"
+        f"📊 <b>สถานะปัจจุบัน:</b> <b>{escape(rec['status'])}</b>"
         f"</blockquote>\n"
-        f"<i>บันทึกเมื่อ {escape(detail['record_date'])}</i>"
+        f"🗓️ <i>ลงข้อมูลเมื่อ: {escape(detail['record_date'])}</i>"
+    )
+
+
+def approval_reply_message(aid: str, decision_title: str, status_text: str) -> str:
+    """ข้อความตอบกลับ (Reply Thread) เมื่อมีการอัปเดตสถานะ เช่น อนุมัติ/ปฏิเสธ"""
+    return (
+        f"<b>{decision_title}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"<blockquote>"
+        f"🔖 <b>คำขอไปราชการ:</b> <code>#{escape(aid)}</code>\n"
+        f"📌 <b>สถานะใหม่:</b> <b>{escape(status_text)}</b>"
+        f"</blockquote>"
     )
 
 
 def form_button(aid: str) -> dict:
+    """ปุ่ม Inline Keyboard กดเปิดดูเอกสารจริงใน MyOffice"""
     return {
-        "inline_keyboard": [[{
-            "text": "📄 เปิดแบบฟอร์มขออนุมัติ",
-            "url": APPROVAL_POPUP_URL.format(approval_id=aid),
-        }]]
+        "inline_keyboard": [
+            [
+                {
+                    "text": "🔗 เปิดเอกสารใน MyOffice",
+                    "url": APPROVAL_POPUP_URL.format(approval_id=aid),
+                }
+            ]
+        ]
     }
 
 
@@ -335,7 +361,7 @@ def main() -> None:
     new_rows = (
         [r for r in rows if r["id"] not in state and approval_num(r) > watermark]
         if watermark
-        else rows[-1:]  # empty state: only the newest
+        else rows[-1:]
     )
     for rec in new_rows:
         detail = fetch_popup(rec["id"], session)
@@ -355,15 +381,15 @@ def main() -> None:
         kind = status_kind(rec["status"])
         if kind == "approved":
             decision = "✅ อนุมัติ"
+            status_text = "อนุมัติ"
         elif kind == "rejected":
             decision = "❌ ปฏิเสธ"
+            status_text = "ปฏิเสธ"
         else:
             decision = None
+            status_text = rec["status"]
         if decision:
-            reply = (
-                f"<b>{decision}</b>\n"
-                f"<blockquote>คำขอไปราชการ #{escape(aid)}</blockquote>"
-            )
+            reply = approval_reply_message(aid, decision, status_text)
             send_telegram(reply, entry.get("telegram_message_id"))
             time.sleep(1.5)
         state[aid] = {**entry, "status": rec["status"]}
