@@ -1,0 +1,55 @@
+name: Recover Missed Leave Notifications
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_id:
+        description: "First leave ID to scan (inclusive)"
+        required: true
+        type: string
+      end_id:
+        description: "Last leave ID to scan (inclusive; maximum 300 IDs per run)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# Share the normal checker lock so state cannot be written concurrently.
+concurrency:
+  group: checkleave
+  cancel-in-progress: false
+
+jobs:
+  recover-missed-notifications:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Scan selected ID range and notify untracked forms
+        env:
+          MYOFFICE_USER: ${{ secrets.MYOFFICE_USER }}
+          MYOFFICE_PASS: ${{ secrets.MYOFFICE_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RECOVER_MISSED_LEAVES: "true"
+          RECOVERY_START_ID: ${{ inputs.start_id }}
+          RECOVERY_END_ID: ${{ inputs.end_id }}
+        run: python check_leave.py
+
+      - name: Commit recovered notification state
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add leave_state.json
+          git diff --cached --quiet && echo 'No state changes' || (git commit -m "Record recovered leave notifications" && git push)
