@@ -95,7 +95,7 @@ def login() -> requests.Session:
     if not sessid:
         raise ValueError("Login failed: PHPSESSID cookie not received")
 
-    if "\u0e0a\u0e37\u0e48\u0e2d\u0e1c\u0e39\u0e49\u0e43\u0e0a\u0e49 \u0e2b\u0e23\u0e37\u0e2d \u0e23\u0e27\u0e31\u0e2a\u0e1c\u0e48\u0e32\u0e19 \u0e44\u0e21\u0e48\u0e16\u0e39\u0e01\u0e15\u0e49\u0e2" in resp.text:
+    if "\u0e0a\u0e37\u0e48\u0e2d\u0e1c\u0e39\u0e49\u0e43\u0e0a\u0e49 \u0e2b\u0e23\u0e37\u0e2d \u0e23\u0e27\u0e31\u0e2a\u0e1c\u0e48\u0e32\u0e19 \u0e44\u0e21\u0e48\u0e16\u0e39\u0e01\u0e15\u0e49\u0e2d\u0e07" in resp.text:
         raise PermissionError("Login failed: Incorrect username or password")
 
     print(f"Logged in successfully (PHPSESSID={sessid[:6]}...)")
@@ -201,7 +201,7 @@ def leave_from_form(leave_id: str, topic: str, status: str, html: str):
         "start_date": start_iso,
         "end_date": end_iso or start_iso,
         "record_date": record_iso,
-        "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ต���แหน่ง"),
+        "requester_name": capture(r"ข้าพเจ้า\s*(.*?)\s*ตำแห��่ง"),
         "reason": capture(r"เนื่องจาก\s*(.*?)\s*ตั้งแต่วันที่"),
         "school": capture(r"สังกัด\s*(.*?)\s*ขอลา"),
         "address": capture(r"ระหว่างลาติดต่อข้าพเจ้าได้ที่\s*(.*?)\s*โทรศัพท์"),
