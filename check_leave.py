@@ -80,12 +80,18 @@ def send_telegram(
 # ---------------------------------------------------------------------------
 def login() -> requests.Session:
     s = requests.Session()
-    # The admin login form expects fields "username" and "password" (observed
-    # from earlier inspection). Adjust if the real names differ.
     data = {"username": USER, "password": PASS}
     resp = s.post(LOGIN_URL, data=data, timeout=15)
     resp.raise_for_status()
-    # Login endpoint returns the authenticated dashboard and PHPSESSID cookie.
+
+    sessid = s.cookies.get("PHPSESSID")
+    if not sessid:
+        raise ValueError("Login failed: PHPSESSID cookie not received")
+
+    if "\u0e0a\u0e37\u0e48\u0e2d\u0e1c\u0e39\u0e49\u0e43\u0e0a\u0e49 \u0e2b\u0e23\u0e37\u0e2d \u0e23\u0e27\u0e31\u0e2a\u0e1c\u0e48\u0e32\u0e19 \u0e44\u0e21\u0e48\u0e16\u0e39\u0e01\u0e15\u0e49\u0e2d\u0e07" in resp.text:
+        raise PermissionError("Login failed: Incorrect username or password")
+
+    print(f"Logged in successfully (PHPSESSID={sessid[:6]}...)")
     return s
 
 # ---------------------------------------------------------------------------
@@ -219,6 +225,9 @@ def parse_dashboard_leaves(html: str, session: requests.Session):
 
 
 def parse_leave_page(html: str, session: requests.Session):
+    if "\u0e17\u0e48\u0e32\u0e19\u0e44\u0e21\u0e48\u0e43\u0e0a\u0e48\u0e2a\u0e21\u0e32\u0e0a\u0e34\u0e01" in html:
+        raise PermissionError("MyOffice session unauthenticated: 'ท่านไม่ใช่สมาชิก'")
+
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
     if not tables:
