@@ -472,6 +472,7 @@ def main():
     session = login()
     resp = session.get(LEAVE_URL, timeout=15)
     resp.raise_for_status()
+    print(f"LEAVE_URL fetched: status={resp.status_code}, len={len(resp.text)}, snippet={resp.text[:300]!r}")
     leaves = [leave_from_row(row) for row in parse_leave_page(resp.text, session)]
 
     if RESET_NOTIFICATION_STATE:
