@@ -45,6 +45,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RESET_NOTIFICATION_STATE = os.getenv("RESET_NOTIFICATION_STATE") == "true"
 DAILY_LEAVE_REPORT = os.getenv("DAILY_LEAVE_REPORT") == "true"
+RECOVER_MISSED_LEAVES = os.getenv("RECOVER_MISSED_LEAVES") == "true"
+RECOVERY_START_ID = os.getenv("RECOVERY_START_ID", "")
+RECOVERY_END_ID = os.getenv("RECOVERY_END_ID", "")
 
 # Probing of leave forms that are no longer listed in the "เอกสารรอดำเนินการ" box.
 BLANK_DATE = "1970-01-01"      # empty form renders as ๑ ม.ค. ๒๕๑๓
@@ -547,6 +550,48 @@ def fetch_leave_form(session: requests.Session, leave_id: str, status: str | Non
     return "ok", leave
 
 
+
+def recover_missed_leaves(session: requests.Session):
+    """Manually recover untracked leave IDs from a bounded, operator-specified range.
+
+    Existing state entries are treated as already notified. Blank forms are skipped.
+    An unreadable ID aborts the run so the operator can inspect the log and retry
+    from that ID; the routine never resets or advances the normal watermark.
+    """
+    if not RECOVERY_START_ID.isdigit() or not RECOVERY_END_ID.isdigit():
+        raise ValueError("Recovery requires numeric RECOVERY_START_ID and RECOVERY_END_ID")
+    start_id, end_id = int(RECOVERY_START_ID), int(RECOVERY_END_ID)
+    if start_id < 1 or end_id < start_id:
+        raise ValueError("Recovery range must satisfy 1 <= START_ID <= END_ID")
+    if end_id - start_id + 1 > PROBE_MAX:
+        raise ValueError(f"Recovery range is limited to {PROBE_MAX} IDs per run")
+
+    sent = skipped_known = skipped_blank = 0
+    for number in range(start_id, end_id + 1):
+        leave_id = str(number)
+        if leave_id in state:
+            skipped_known += 1
+            print(f"Recovery #{leave_id}: already in state; skip")
+            continue
+        kind, leave = fetch_leave_form(session, leave_id)
+        if kind == "error":
+            raise RuntimeError(
+                f"Recovery stopped at ID #{leave_id}: form could not be read safely. "
+                "No watermark was changed; inspect the log and retry a smaller range."
+            )
+        if kind == "blank":
+            skipped_blank += 1
+            continue
+        save_notified_leave(leave, "📚 กู้คืนการแจ้งเตือนใบลาที่ตกหล่น")
+        sent += 1
+        print(f"Recovery #{leave_id}: notification sent and state saved")
+        time.sleep(1.5)
+
+    print(
+        f"Recovery complete: sent={sent}, already_tracked={skipped_known}, "
+        f"blank={skipped_blank}, range={start_id}-{end_id}"
+    )
+
 def probe_new_leaves(session: requests.Session, dashboard: dict, watermark: int):
     """Walk IDs after the watermark and return (leaves, blocked_id, scanned_through).
 
@@ -617,6 +662,10 @@ def pending_to_reopen(dashboard: dict) -> list[str]:
 def main():
     global state
     session = login()
+    if RECOVER_MISSED_LEAVES:
+        recover_missed_leaves(session)
+        return
+
     resp = session.get(LEAVE_URL, timeout=15)
     resp.raise_for_status()
 
