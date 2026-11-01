@@ -1,4 +1,3 @@
-import os
 import sys
 
 from check_approval import (
@@ -10,7 +9,6 @@ from check_approval import (
     notify_new,
     parse_listing,
     require_env,
-    save_state,
     state,
 )
 
@@ -44,7 +42,6 @@ def main() -> None:
         print("❌ Failed to retrieve telegram_message_id from state.")
         return
 
-    save_state()
     print(f"✅ Sent test approval message for ID {rec['id']}")
     print(f"📁 Stored telegram_message_id={telegram_message_id} in approval_state.json")
 
