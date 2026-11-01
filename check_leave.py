@@ -220,6 +220,9 @@ def parse_dashboard_leaves(html: str, session: requests.Session):
         detail.raise_for_status()
         leaves.append(leave_from_form(match.group(1), cells[1], cells[-2] if len(cells) > 2 else "รอดำเนินการ", detail.text))
     if not leaves:
+        # Check if the page legitimately says 0 records
+        if "จำนวน 0" in html:
+            return []
         raise ValueError("Leave dashboard contained no form links")
     return leaves
 
@@ -243,6 +246,8 @@ def parse_leave_page(html: str, session: requests.Session):
         if rows:
             candidates.append(rows)
     if not candidates:
+        if "จำนวน 0" in html:
+            return []
         return parse_dashboard_leaves(html, session)
     return max(candidates, key=len)
 
@@ -472,15 +477,7 @@ def main():
     session = login()
     resp = session.get(LEAVE_URL, timeout=15)
     resp.raise_for_status()
-    soup_debug = BeautifulSoup(resp.text, "html.parser")
-    tables_debug = soup_debug.find_all("table")
-    print(f"DEBUG: tables count={len(tables_debug)}")
-    for i, t in enumerate(tables_debug):
-        rows_debug = t.find_all("tr")
-        print(f"DEBUG: table[{i}] rows={len(rows_debug)}")
-        for r in rows_debug[:5]:
-            cells = [c.get_text(' ', strip=True) for c in r.find_all(['td', 'th'])]
-            print(f"  row: {cells[:6]}")
+
     leaves = [leave_from_row(row) for row in parse_leave_page(resp.text, session)]
 
     if RESET_NOTIFICATION_STATE:
