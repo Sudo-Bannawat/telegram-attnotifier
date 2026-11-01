@@ -13,5 +13,45 @@
     "id": 1146,
     "count": 4
   },
-  "_watermark": 1145
+  "_watermark": 1145,
+  "1146": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 23,
+    "seen": "2026-11-01"
+  },
+  "1149": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 24,
+    "seen": "2026-11-01"
+  },
+  "1150": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 25,
+    "seen": "2026-11-01"
+  },
+  "1151": {
+    "status": "เสนอผู้บริหาร",
+    "telegram_message_id": 26,
+    "seen": "2026-11-01"
+  },
+  "1152": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 27,
+    "seen": "2026-11-01"
+  },
+  "1153": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 28,
+    "seen": "2026-11-01"
+  },
+  "1155": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 29,
+    "seen": "2026-11-01"
+  },
+  "1156": {
+    "status": "เสนอผู้บริหาร",
+    "telegram_message_id": 30,
+    "seen": "2026-11-01"
+  }
 }
