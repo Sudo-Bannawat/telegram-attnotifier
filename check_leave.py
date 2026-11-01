@@ -648,8 +648,8 @@ def main():
 
     # 1) New requests. Approved leaves leave the "เอกสารรอดำเนินการ" box, so the
     # dashboard alone misses them: walk IDs after the watermark and open each
-    # form. The watermark only advances over leaves that were announced, never
-    # over an ID whose fetch failed.
+    # form. The watermark advances over announced leaves and confirmed blank
+    # forms, but never over an ID whose fetch failed.
     watermark = known_watermark()
     if watermark:
         new_leaves, blocked, scanned_through = probe_new_leaves(session, dashboard, watermark)
