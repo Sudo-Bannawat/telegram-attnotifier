@@ -220,8 +220,8 @@ def parse_dashboard_leaves(html: str, session: requests.Session):
         detail.raise_for_status()
         leaves.append(leave_from_form(match.group(1), cells[1], cells[-2] if len(cells) > 2 else "รอดำเนินการ", detail.text))
     if not leaves:
-        # Check if the page legitimately says 0 records
-        if "จำนวน 0" in html:
+        text_content = soup.get_text(" ", strip=True)
+        if "จำนวน 0" in text_content or "จำนวน 0" in html:
             return []
         raise ValueError("Leave dashboard contained no form links")
     return leaves
@@ -230,8 +230,9 @@ def parse_dashboard_leaves(html: str, session: requests.Session):
 def parse_leave_page(html: str, session: requests.Session):
     if "\u0e17\u0e48\u0e32\u0e19\u0e44\u0e21\u0e48\u0e43\u0e0a\u0e48\u0e2a\u0e21\u0e32\u0e0a\u0e34\u0e01" in html:
         raise PermissionError("MyOffice session unauthenticated: 'ท่านไม่ใช่สมาชิก'")
-
     soup = BeautifulSoup(html, "html.parser")
+    print(f"parse_leave_page: has 'จำนวน 0' in html: {'จำนวน 0' in html}, in text: {'จำนวน 0' in soup.get_text(' ', strip=True)}")
+
     tables = soup.find_all("table")
     if not tables:
         raise ValueError("Leave table not found on page")
@@ -245,8 +246,10 @@ def parse_leave_page(html: str, session: requests.Session):
                 rows.append(cols)
         if rows:
             candidates.append(rows)
+    # If there are no leave data rows, check if the table or page text states 0 items
+    text_content = soup.get_text(" ", strip=True)
     if not candidates:
-        if "จำนวน 0" in html:
+        if "จำนวน 0" in text_content or "จำนวน 0" in html:
             return []
         return parse_dashboard_leaves(html, session)
     return max(candidates, key=len)
