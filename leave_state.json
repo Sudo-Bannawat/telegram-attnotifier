@@ -2,5 +2,11 @@
   "1145": {
     "status": "เสนอผู้บริหาร",
     "telegram_message_id": 18
+  },
+  "_daily_reports": {
+    "2026-11-01": {
+      "approved": 0,
+      "rejected": 0
+    }
   }
 }
