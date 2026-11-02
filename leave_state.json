@@ -14,7 +14,7 @@
       "rejected": 0
     }
   },
-  "_watermark": 1928,
+  "_watermark": 1936,
   "1146": {
     "status": "รอดำเนินการ",
     "telegram_message_id": 23,
@@ -26,7 +26,7 @@
     "seen": "2026-11-01"
   },
   "1150": {
-    "status": "รอดำเนินการ",
+    "status": "เสนอผู้บริหาร",
     "telegram_message_id": 25,
     "seen": "2026-11-01"
   },
@@ -36,7 +36,7 @@
     "seen": "2026-11-01"
   },
   "1152": {
-    "status": "รอดำเนินการ",
+    "status": "เสนอผู้บริหาร",
     "telegram_message_id": 27,
     "seen": "2026-11-01"
   },
