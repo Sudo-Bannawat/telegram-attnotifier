@@ -1,6 +1,6 @@
 {
   "1145": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 18,
     "seen": "2026-11-02"
   },
@@ -14,7 +14,7 @@
       "rejected": 0
     }
   },
-  "_watermark": 1560,
+  "_watermark": 1568,
   "1146": {
     "status": "รอดำเนินการ",
     "telegram_message_id": 23,
