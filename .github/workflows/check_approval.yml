@@ -14,12 +14,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: checkapproval
+  cancel-in-progress: false
+
 jobs:
   check-approval:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,4 +55,13 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add approval_state.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: auto-update approval_state.json [skip ci]" && git push)
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: auto-update approval_state.json [skip ci]"
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && exit 0
+              sleep 2
+            done
+            exit 1
+          else
+            echo 'No changes'
+          fi
