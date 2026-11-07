@@ -2,8 +2,8 @@ name: Daily Leave Report
 
 on:
   schedule:
-    # 17:05 UTC = 00:05 Asia/Bangkok (UTC+7), every day.
-    - cron: '5 17 * * *'
+    # 10:00 UTC = 17:00 Asia/Bangkok (UTC+7), every day.
+    - cron: '0 10 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -30,6 +30,8 @@ jobs:
         env:
           MYOFFICE_USER: ${{ secrets.MYOFFICE_USER }}
           MYOFFICE_PASS: ${{ secrets.MYOFFICE_PASS }}
+          MYOFFICE_ADMIN_USER: ${{ secrets.MYOFFICE_ADMIN_USER }}
+          MYOFFICE_ADMIN_PASS: ${{ secrets.MYOFFICE_ADMIN_PASS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MYOFFICE_LEAVE_CATEGORY: '187'

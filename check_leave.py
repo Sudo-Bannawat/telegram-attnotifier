@@ -43,6 +43,11 @@ USER = os.getenv("MYOFFICE_USER")
 PASS = os.getenv("MYOFFICE_PASS")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# Optional admin credentials (used only for the daily leave report) to enrich
+# each entry with ตำแหน่ง/กลุ่มสาระ from the admin `user_cp` module.
+ADMIN_USER = os.getenv("MYOFFICE_ADMIN_USER")
+ADMIN_PASS = os.getenv("MYOFFICE_ADMIN_PASS")
+USER_CP_URL = f"{BASE_URL}/index.php?name=admin&file=user_cp"
 RESET_NOTIFICATION_STATE = os.getenv("RESET_NOTIFICATION_STATE") == "true"
 DAILY_LEAVE_REPORT = os.getenv("DAILY_LEAVE_REPORT") == "true"
 RECOVER_MISSED_LEAVES = os.getenv("RECOVER_MISSED_LEAVES") == "true"
@@ -431,7 +436,121 @@ def cancelled_leave_ids(session: requests.Session) -> set[str]:
     }
 
 
-def run_daily_leave_report(leaves: list[dict], cancelled_ids: set[str]):
+# ---------------------------------------------------------------------------
+# Daily leave report (rich summary sent at 17:00 Asia/Bangkok)
+#
+# Reads real leave forms (not just the pending-docs dashboard box, which drops
+# approved/rejected leaves) and enriches each entry with ตำแหน่ง/กลุ่มสาระ from
+# the admin `user_cp` module when MYOFFICE_ADMIN_USER/PASS are configured.
+# ---------------------------------------------------------------------------
+_THAI_WEEKDAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
+_THAI_MONTHS_FULL = [
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+]
+_NAME_TITLE_RE = re.compile(r"^(นางสาว|นาง|นาย|น\.ส\.|ว่าที่\s+[\u0e00-\u0e7f\.]+\s+)")
+
+
+def normalize_name(value: str) -> str:
+    """Collapse a Thai name to a matching key: strip title + all white-space.
+
+    e.g. "นางสาวณัชชา   ชุมชาติ" -> "ณัชชาชุมชาติ"
+    """
+    if not value:
+        return ""
+    text = _NAME_TITLE_RE.sub("", value.strip())
+    return re.sub(r"[\s]+", "", text)
+
+
+def thai_long_date(value: date) -> str:
+    weekday = _THAI_WEEKDAYS[value.weekday()]
+    month = _THAI_MONTHS_FULL[value.month - 1]
+    return f"{weekday}ที่ {value.day} {month} {value.year + 543}"
+
+
+def staff_directory() -> dict:
+    """Load {normalized_name: {"position","group"}} from the admin `user_cp`.
+
+    Returns {} when admin credentials are not configured (the report still
+    works, it simply omits ตำแหน่ง/กลุ่มสาระ enrichment).
+    """
+    if not ADMIN_USER or not ADMIN_PASS:
+        print("Daily report: MYOFFICE_ADMIN_USER/PASS not set — no ตำแหน่ง/กลุ่มสาระ lookup")
+        return {}
+    s = requests.Session()
+    resp = s.post(LOGIN_URL, data={"username": ADMIN_USER, "password": ADMIN_PASS}, timeout=15)
+    resp.raise_for_status()
+    if not s.cookies.get("PHPSESSID"):
+        raise PermissionError("Admin login failed: no PHPSESSID cookie")
+    if "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง" in resp.text:
+        raise PermissionError("Admin login failed: wrong username or password")
+    resp = s.get(USER_CP_URL, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    directory = {}
+    for tr in soup.find_all("tr"):
+        cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
+        # user_cp rows: [id, username, ชื่อ-นามสกุล, ตำแหน่ง, กลุ่มสาระ, ...]
+        if len(cells) < 5 or not cells[0].strip().isdigit():
+            continue
+        key = normalize_name(cells[2])
+        if not key or key in directory:
+            continue
+        directory[key] = {"position": cells[3], "group": cells[4]}
+    print(f"Daily report: staff directory loaded ({len(directory)} people)")
+    return directory
+
+
+def telegram_message_link(message_id) -> str:
+    """Deep link to a previously-sent Telegram message in the bot's chat."""
+    try:
+        msg = int(message_id)
+    except (TypeError, ValueError):
+        msg = 0
+    if not msg:
+        return ""
+    chat = str(CHAT_ID)
+    if chat.startswith("-100"):  # supergroup/channel
+        return f"https://t.me/c/{chat[4:]}/{msg}"
+    return f"tg://openmessage?chat_id={chat}&message_id={msg}"
+
+
+def _report_item_lines(leave: dict, staff: dict, index: int) -> list[str]:
+    info = staff.get(normalize_name(leave.get("requester_name", "")), {})
+    position = (info.get("position") or leave.get("position") or "").strip()
+    position = re.sub(r"ผูู้|ผูู้้", "ผู้", position) or "-"
+    group = (info.get("group") or "").strip() or "-"
+    return [
+        f"<b>{index}.</b> {escape(leave.get('requester_name', ''))}",
+        f"🏷️ <b>ตำแหน่ง:</b> {escape(position)}",
+        f"🏫 <b>กลุ่มสาระ:</b> {escape(group)}",
+        f"🔥 <b>ลาเนื่องจาก:</b> {escape(leave.get('leave_type', ''))}",
+        f"💬 <b>เรื่อง:</b> {escape(leave.get('topic', ''))}",
+        f"📝 <b>เหตุผล:</b> {escape(leave.get('reason', ''))}",
+        f"📅 <b>วันลา:</b> {escape(leave.get('start_date', ''))} — {escape(leave.get('end_date', ''))}",
+    ]
+
+
+def send_report_section(leaves: list[dict], heading: str, date_title: str, staff: dict):
+    """Send one rich report section; each entry gets a button to its original alert."""
+    for offset in range(0, len(leaves), 8):
+        chunk = leaves[offset:offset + 8]
+        lines = [f"<b>{date_title}</b>\n📋 <b>{heading}</b>"]
+        buttons = []
+        for index, leave in enumerate(chunk, start=offset + 1):
+            lines.append("\n".join(_report_item_lines(leave, staff, index)))
+            entry = state.get(leave["id"], {})
+            entry = entry if isinstance(entry, dict) else {}
+            msg_link = telegram_message_link(entry.get("telegram_message_id"))
+            url = msg_link or LEAVE_FORM_URL.format(leave_id=leave["id"])
+            buttons.append([{"text": "🔗 ดูข้อความใบลาที่แจ้งไว้", "url": url}])
+        section = " (ต่อ)" if offset else ""
+        text = "\n\n".join(lines)
+        send_telegram(text, reply_markup={"inline_keyboard": buttons})
+        print(f"Daily report: sent section '{heading}'{section} ({len(chunk)} entries)")
+
+
+def run_daily_leave_report(leaves: list[dict], cancelled_ids: set[str], session: requests.Session):
     today = bangkok_today()
     report_key = today.isoformat()
     reports = state.setdefault("_daily_reports", {})
@@ -439,26 +558,60 @@ def run_daily_leave_report(leaves: list[dict], cancelled_ids: set[str]):
         print(f"Daily report already sent for {report_key}")
         return
 
-    today_leaves = [
-        leave for leave in leaves
-        if leave["start_date"] == report_key and leave["id"] not in cancelled_ids
-    ]
-    approved = [leave for leave in today_leaves if status_kind(leave["status"]) == "approved"]
-    rejected = [leave for leave in today_leaves if status_kind(leave["status"]) == "rejected"]
-    approved.sort(key=lambda leave: (leave["requester_name"], int(leave["id"])))
-    rejected.sort(key=lambda leave: (leave["requester_name"], int(leave["id"])))
+    # 1) Full, fresh data for every known leave: dashboard rows + direct form
+    #    fetches for every ID we have ever tracked (decided leaves are no longer
+    #    on the dashboard box, so this is the only way to see them).
+    by_id = {l["id"]: l for l in leaves}
+    for key in list(state):
+        if not key.isdigit() or key in by_id:
+            continue
+        kind, leave = fetch_leave_form(session, key)
+        if kind == "ok":
+            by_id[key] = leave
 
+    # 2) Relevant today = on leave today or starting today; skip cancelled.
+    today_leaves = []
+    for leave in by_id.values():
+        if leave["id"] in cancelled_ids:
+            continue
+        try:
+            start = date.fromisoformat(leave["start_date"]) if leave.get("start_date") else None
+        except ValueError:
+            start = None
+        try:
+            end = date.fromisoformat(leave["end_date"]) if leave.get("end_date") else None
+        except ValueError:
+            end = None
+        if start is None:
+            continue
+        if start <= today and (end is None or end >= today):
+            today_leaves.append(leave)
+
+    approved = [l for l in today_leaves if status_kind(l["status"]) == "approved"]
+    rejected = [l for l in today_leaves if status_kind(l["status"]) == "rejected"]
+    approved.sort(key=lambda leave: (normalize_name(leave["requester_name"]), leave_num(leave)))
+    rejected.sort(key=lambda leave: (normalize_name(leave["requester_name"]), leave_num(leave)))
+    print(
+        f"Daily report: today={today} relevant={len(today_leaves)} "
+        f"approved={len(approved)} rejected={len(rejected)}"
+    )
+
+    if not approved and not rejected:
+        reports[report_key] = {"approved": 0, "rejected": 0}
+        save_state()
+        print(f"Daily report: no decided leaves today — nothing sent (recorded {report_key})")
+        return
+
+    staff = staff_directory()
+    date_title = f"รายงานการลาของบุคลากร วันที่ {thai_long_date(today)}"
     if approved:
-        send_daily_report(approved, "วันนี้มีบุคลากรแจ้งลา", today)
+        send_report_section(approved, "✅ ได้รับอนุญาติให้ลา", date_title, staff)
     if rejected:
-        send_daily_report(rejected, "ผู้กรอกแบบฟอร์มขอลาไม่ได้รับอนุญาต", today)
+        send_report_section(rejected, "❌ ไม่ได้รับอนุญาติให้ลา", date_title, staff)
 
-    reports[report_key] = {
-        "approved": len(approved),
-        "rejected": len(rejected),
-    }
+    reports[report_key] = {"approved": len(approved), "rejected": len(rejected)}
     save_state()
-    print(f"Daily report: approved={len(approved)}, rejected={len(rejected)}")
+    print(f"Daily report: done for {report_key}")
 
 
 def leave_num(leave: dict) -> int:
@@ -688,7 +841,7 @@ def main():
 
     if DAILY_LEAVE_REPORT:
         # Fail closed: no report is safer than reporting leave already cancelled.
-        run_daily_leave_report(leaves, cancelled_leave_ids(session))
+        run_daily_leave_report(leaves, cancelled_leave_ids(session), session)
         return
 
     # Normal scheduled check: handle every leave, oldest first.
