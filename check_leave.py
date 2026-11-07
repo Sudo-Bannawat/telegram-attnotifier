@@ -531,11 +531,15 @@ def _report_item_lines(leave: dict, staff: dict, index: int) -> list[str]:
     ]
 
 
-def send_report_section(leaves: list[dict], heading: str, date_title: str, staff: dict):
+def send_report_section(leaves: list[dict], heading: str, date_title: str, staff: dict, with_title: bool = True):
     """Send one rich report section; each entry gets a button to its original alert."""
     for offset in range(0, len(leaves), 8):
         chunk = leaves[offset:offset + 8]
-        lines = [f"<b>{date_title}</b>\n📋 <b>{heading}</b>"]
+        lines = []
+        if with_title and offset == 0:
+            lines.append(f"<b>{date_title}</b>\n📋 <b>{heading}</b>")
+        else:
+            lines.append(f"📋 <b>{heading}</b>" + (" (ต่อ)" if offset else ""))
         buttons = []
         for index, leave in enumerate(chunk, start=offset + 1):
             lines.append("\n".join(_report_item_lines(leave, staff, index)))
@@ -544,15 +548,32 @@ def send_report_section(leaves: list[dict], heading: str, date_title: str, staff
             msg_link = telegram_message_link(entry.get("telegram_message_id"))
             url = msg_link or LEAVE_FORM_URL.format(leave_id=leave["id"])
             buttons.append([{"text": "🔗 ดูข้อความใบลาที่แจ้งไว้", "url": url}])
-        section = " (ต่อ)" if offset else ""
         text = "\n\n".join(lines)
         send_telegram(text, reply_markup={"inline_keyboard": buttons})
-        print(f"Daily report: sent section '{heading}'{section} ({len(chunk)} entries)")
+        print(f"Daily report: sent section '{heading}' ({len(chunk)} entries)")
+
+
+# Leave requested for a future date but only decided long after it ended.
+RECENT_DECISION_DAYS = 7
+
+
+def _leave_dates(leave: dict) -> tuple:
+    try:
+        start = date.fromisoformat(leave["start_date"]) if leave.get("start_date") else None
+    except ValueError:
+        start = None
+    try:
+        end = date.fromisoformat(leave["end_date"]) if leave.get("end_date") else None
+    except ValueError:
+        end = None
+    return start, end
 
 
 def run_daily_leave_report(leaves: list[dict], cancelled_ids: set[str], session: requests.Session):
     today = bangkok_today()
-    report_key = today.isoformat()
+    # Sent at 17:00 for the NEXT calendar day, so decisions made during today are included.
+    target = today + timedelta(days=1)
+    report_key = target.isoformat()
     reports = state.setdefault("_daily_reports", {})
     if report_key in reports:
         print(f"Daily report already sent for {report_key}")
@@ -569,47 +590,66 @@ def run_daily_leave_report(leaves: list[dict], cancelled_ids: set[str], session:
         if kind == "ok":
             by_id[key] = leave
 
-    # 2) Relevant today = on leave today or starting today; skip cancelled.
-    today_leaves = []
+    # 2) Bucket every known leave (never silently drops a decided leave):
+    #    - approved / rejected : covering the target day
+    #    - decided-late        : already past (end < target) but decided within the
+    #                            last RECENT_DECISION_DAYS (e.g. ผอ. อนุมัติทีหลัง)
+    #    - pending             : every undecided leave (whatever its date) so ผอ.
+    #                            can see what still needs approval, even past leaves.
+    approved, rejected, pending, late = [], [], [], []
     for leave in by_id.values():
         if leave["id"] in cancelled_ids:
             continue
-        try:
-            start = date.fromisoformat(leave["start_date"]) if leave.get("start_date") else None
-        except ValueError:
-            start = None
-        try:
-            end = date.fromisoformat(leave["end_date"]) if leave.get("end_date") else None
-        except ValueError:
-            end = None
-        if start is None:
-            continue
-        if start <= today and (end is None or end >= today):
-            today_leaves.append(leave)
+        start, end = _leave_dates(leave)
+        covers_target = start is not None and start <= target and (end is None or end >= target)
+        kind = status_kind(leave["status"])
+        if kind in ("approved", "rejected"):
+            if covers_target:
+                (approved if kind == "approved" else rejected).append(leave)
+            elif end is not None and end < target and end >= target - timedelta(days=RECENT_DECISION_DAYS):
+                late.append(leave)
+        elif kind == "pending":
+            pending.append(leave)
 
-    approved = [l for l in today_leaves if status_kind(l["status"]) == "approved"]
-    rejected = [l for l in today_leaves if status_kind(l["status"]) == "rejected"]
     approved.sort(key=lambda leave: (normalize_name(leave["requester_name"]), leave_num(leave)))
     rejected.sort(key=lambda leave: (normalize_name(leave["requester_name"]), leave_num(leave)))
+    pending.sort(key=lambda leave: (normalize_name(leave["requester_name"]), leave_num(leave)))
+    late.sort(key=lambda leave: (normalize_name(leave["requester_name"]), leave_num(leave)))
     print(
-        f"Daily report: today={today} relevant={len(today_leaves)} "
-        f"approved={len(approved)} rejected={len(rejected)}"
+        f"Daily report: target={target} approved={len(approved)} rejected={len(rejected)} "
+        f"pending={len(pending)} decided_late={len(late)}"
     )
 
-    if not approved and not rejected:
-        reports[report_key] = {"approved": 0, "rejected": 0}
+    date_title = f"รายงานการลาของบุคลากร วันที่ {thai_long_date(target)}"
+
+    if not approved and not rejected and not pending and not late:
+        send_telegram(f"<b>{date_title}</b>\n\n😌 ไม่มีบุคลากรลาวันนี้")
+        reports[report_key] = {"approved": 0, "rejected": 0, "pending": 0, "decided_late": 0, "empty": True}
         save_state()
-        print(f"Daily report: no decided leaves today — nothing sent (recorded {report_key})")
+        print(f"Daily report: no one on leave for {report_key} — empty message sent")
         return
 
     staff = staff_directory()
-    date_title = f"รายงานการลาของบุคลากร วันที่ {thai_long_date(today)}"
+    first = True
     if approved:
-        send_report_section(approved, "✅ ได้รับอนุญาติให้ลา", date_title, staff)
+        send_report_section(approved, "✅ ได้รับอนุญาติให้ลา", date_title, staff, with_title=first)
+        first = False
+    if pending:
+        send_report_section(pending, "⏳ ยังรอดำเนินการ (ยังไม่ได้อนุญาต)", date_title, staff, with_title=first)
+        first = False
     if rejected:
-        send_report_section(rejected, "❌ ไม่ได้รับอนุญาติให้ลา", date_title, staff)
+        send_report_section(rejected, "❌ ไม่ได้รับอนุญาติให้ลา", date_title, staff, with_title=first)
+        first = False
+    if late:
+        send_report_section(late, "🔔 พ้นกำหนดวันลาแล้ว (อนุมัติ/ปฏิเสธช้า)", date_title, staff, with_title=first)
+        first = False
 
-    reports[report_key] = {"approved": len(approved), "rejected": len(rejected)}
+    reports[report_key] = {
+        "approved": len(approved),
+        "rejected": len(rejected),
+        "pending": len(pending),
+        "decided_late": len(late),
+    }
     save_state()
     print(f"Daily report: done for {report_key}")
 
