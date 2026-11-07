@@ -712,9 +712,21 @@ def main():
         save_state()
         time.sleep(1.5)  # stay under Telegram's per-chat rate limit
 
-    # Advance over IDs confirmed to be blank, but never over a fetch failure.
-    # This is essential: otherwise every run retries the same blank IDs forever.
-    state["_watermark"] = max(int(state.get("_watermark", 0)), scanned_through)
+    # Anchor the watermark to the highest REAL leave ID we know of (dashboard
+    # rows, newly announced forms, and already-tracked IDs). Deliberately do NOT
+    # persist scanned_through, which counts blank-form IDs: the probe crosses
+    # gaps cheaply every run (PROBE_LOOKAHEAD), and letting the watermark creep
+    # over blank IDs makes it leapfrog over leaves that are created later with
+    # those sequential IDs, silently dropping every future notification.
+    # Setting it explicitly (not max-with-current) also repairs a watermark that
+    # has drifted far ahead of the real data (see the Nov 2026 runaway incident).
+    top_real = max(
+        [int(l["id"]) for l in leaves]
+        + [int(l["id"]) for l in new_leaves]
+        + [int(k) for k in state if k.isdigit()],
+        default=0,
+    )
+    state["_watermark"] = top_real
     save_state()
     track_stuck(blocked)
 
