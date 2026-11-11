@@ -58,7 +58,7 @@
       "decided_late": 25
     }
   },
-  "_watermark": 1226,
+  "_watermark": 1227,
   "1146": {
     "status": "รอดำเนินการ",
     "telegram_message_id": 23,
@@ -397,6 +397,11 @@
   "1226": {
     "status": "รอดำเนินการ",
     "telegram_message_id": 152,
+    "seen": "2026-11-11"
+  },
+  "1227": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 153,
     "seen": "2026-11-11"
   }
 }
