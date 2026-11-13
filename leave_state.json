@@ -68,6 +68,12 @@
       "rejected": 0,
       "pending": 24,
       "decided_late": 21
+    },
+    "2026-11-15": {
+      "approved": 3,
+      "rejected": 0,
+      "pending": 20,
+      "decided_late": 24
     }
   },
   "_watermark": 1238,
