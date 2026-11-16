@@ -88,7 +88,7 @@
       "decided_late": 16
     }
   },
-  "_watermark": 1247,
+  "_watermark": 1248,
   "1146": {
     "status": "รอดำเนินการ",
     "telegram_message_id": 23,
@@ -533,5 +533,10 @@
     "status": "เสนอผู้บริหาร",
     "telegram_message_id": 214,
     "seen": "2026-11-16"
+  },
+  "1248": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 221,
+    "seen": "2026-11-17"
   }
 }
