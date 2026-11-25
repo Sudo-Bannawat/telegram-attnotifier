@@ -136,7 +136,7 @@
       "decided_late": 12
     }
   },
-  "_watermark": 1300,
+  "_watermark": 1301,
   "1146": {
     "status": "รอดำเนินการ",
     "telegram_message_id": 23,
@@ -718,7 +718,7 @@
     "seen": "2026-11-20"
   },
   "1275": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 296,
     "seen": "2026-11-20"
   },
@@ -733,32 +733,32 @@
     "seen": "2026-11-23"
   },
   "1278": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 316,
     "seen": "2026-11-23"
   },
   "1279": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 317,
     "seen": "2026-11-23"
   },
   "1280": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 318,
     "seen": "2026-11-23"
   },
   "1281": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 319,
     "seen": "2026-11-23"
   },
   "1283": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 320,
     "seen": "2026-11-23"
   },
   "1284": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 321,
     "seen": "2026-11-23"
   },
@@ -768,7 +768,7 @@
     "seen": "2026-11-23"
   },
   "1286": {
-    "status": "เสนอผู้บริหาร",
+    "status": "อนุญาต",
     "telegram_message_id": 323,
     "seen": "2026-11-23"
   },
@@ -840,6 +840,11 @@
   "1300": {
     "status": "รอดำเนินการ",
     "telegram_message_id": 364,
+    "seen": "2026-11-25"
+  },
+  "1301": {
+    "status": "รอดำเนินการ",
+    "telegram_message_id": 372,
     "seen": "2026-11-25"
   }
 }
